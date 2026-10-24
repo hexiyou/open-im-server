@@ -179,19 +179,21 @@ func (c *Client) handleMessage(message []byte) error {
 	)
 
 	switch binaryReq.ReqIdentifier {
-	case WSGetNewestSeq:
+	// [XunLink] WASM/JS SDK（openim-sdk-core js 协议）使用 6xxx 帧号（6001~6007 对应 1001~1007），
+	// patch.18 网关收敛为 1xxx 后 js SDK 不可用；此处做帧号归一以恢复兼容
+	case WSGetNewestSeq, WSGetNewestSeq + 5000:
 		resp, messageErr = c.longConnServer.GetSeq(ctx, binaryReq)
-	case WSSendMsg:
+	case WSSendMsg, WSSendMsg + 5000:
 		resp, messageErr = c.longConnServer.SendMessage(ctx, binaryReq)
-	case WSSendSignalMsg:
+	case WSSendSignalMsg, WSSendSignalMsg + 5000:
 		resp, messageErr = c.longConnServer.SendSignalMessage(ctx, binaryReq)
-	case WSPullMsgBySeqList:
+	case WSPullMsgBySeqList, WSPullMsgBySeqList + 5000:
 		resp, messageErr = c.longConnServer.PullMessageBySeqList(ctx, binaryReq)
-	case WSPullMsg:
+	case WSPullMsg, WSPullMsg + 5000:
 		resp, messageErr = c.longConnServer.GetSeqMessage(ctx, binaryReq)
-	case WSGetConvMaxReadSeq:
+	case WSGetConvMaxReadSeq, WSGetConvMaxReadSeq + 5000:
 		resp, messageErr = c.longConnServer.GetConversationsHasReadAndMaxSeq(ctx, binaryReq)
-	case WsPullConvLastMessage:
+	case WsPullConvLastMessage, WsPullConvLastMessage + 5000:
 		resp, messageErr = c.longConnServer.GetLastMessage(ctx, binaryReq)
 	case WsLogoutMsg:
 		resp, messageErr = c.longConnServer.UserLogout(ctx, binaryReq)

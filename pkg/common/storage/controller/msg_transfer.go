@@ -5,6 +5,7 @@ import (
 
 	"github.com/openimsdk/open-im-server/v3/pkg/common/convert"
 	"github.com/openimsdk/open-im-server/v3/pkg/common/storage/kafka"
+	"github.com/openimsdk/open-im-server/v3/pkg/xlink/tenantctx"
 	"github.com/openimsdk/protocol/constant"
 	"github.com/openimsdk/tools/utils/datautil"
 
@@ -18,6 +19,12 @@ import (
 	"github.com/openimsdk/tools/log"
 	"go.mongodb.org/mongo-driver/mongo"
 )
+
+// tenantOfUserID [XunLink] userID 前缀解析租户（T-92 消费侧无 ctx，见 xlink/tenantctx）
+func tenantOfUserID(userID string) int64 {
+	tid, _ := tenantctx.ParseTenantFromUserID(userID)
+	return tid
+}
 
 type MsgTransferDatabase interface {
 	// BatchInsertChat2DB inserts a batch of messages into the database for a specific conversation.
@@ -161,6 +168,12 @@ func (db *msgTransferDatabase) BatchInsertBlock(ctx context.Context, conversatio
 		switch key {
 		case updateKeyMsg:
 			res, err = db.msgDocDatabase.UpdateMsg(ctx, docID, index, "msg", field)
+			// [XunLink] T-92：更新路径同样补租户归属（同文档内字段级更新）
+			if err == nil && res != nil && res.MatchedCount > 0 {
+				if m, ok := field.(*model.MsgDataModel); ok {
+					_, _ = db.msgDocDatabase.UpdateMsg(ctx, docID, index, "tenant_id", tenantOfUserID(m.SendID))
+				}
+			}
 		case updateKeyRevoke:
 			res, err = db.msgDocDatabase.UpdateMsg(ctx, docID, index, "revoke", field)
 		}
@@ -194,8 +207,11 @@ func (db *msgTransferDatabase) BatchInsertBlock(ctx context.Context, conversatio
 			insert++
 			switch key {
 			case updateKeyMsg:
+				m := fields[j].(*model.MsgDataModel)
 				doc.Msg[db.msgTable.GetMsgIndex(seq)] = &model.MsgInfoModel{
-					Msg: fields[j].(*model.MsgDataModel),
+					Msg: m,
+					// [XunLink] T-92：逐条按 SendID 前缀落租户归属（消费侧无用户 ctx）
+					TenantID: tenantOfUserID(m.SendID),
 				}
 			case updateKeyRevoke:
 				doc.Msg[db.msgTable.GetMsgIndex(seq)] = &model.MsgInfoModel{
