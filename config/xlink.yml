@@ -1,0 +1,35 @@
+# =====================================================================
+# xlink.yml · 讯联IM 平台层服务配置（openim-saas-api / openim-admin-api 共用）
+# 数据库字典：docs/dev/数据库字典.md；API 字典：docs/dev/API接口字典.md
+# =====================================================================
+
+adminAPI:
+  listenIP: 0.0.0.0
+  ports: [ 10301 ]          # 总后台 API-PLAT-xx
+
+saasAPI:
+  listenIP: 0.0.0.0
+  ports: [ 10300 ]          # 商户后台 API-TEN-xx / API-C-xx / API-G-xx
+
+mongo:
+  address: [ localhost:37017 ]
+  database: openim_v3
+  username: openIM
+  password: openIM123
+  authSource: openim_v3
+  maxPoolSize: 50
+
+jwt:
+  platformSecret: xlinkPlatformSecret_dev_only   # 生产环境必须更换
+  tenantSecret: xlinkTenantSecret_dev_only       # 生产环境必须更换
+  expireDays: 7
+
+openim:
+  tokenSecret: openIM123          # 与 share.yml 的 token.secret 一致（注册用户/内部调用用）
+  imAdminUserID: imAdmin
+  etcdAddress: [ localhost:12379 ]
+  etcdRootDir: openim
+
+seed:
+  superUser: admin
+  superPassword: xlinkAdmin123    # 开发种子账号，生产环境务必修改

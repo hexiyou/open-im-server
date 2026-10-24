@@ -1,0 +1,63 @@
+// Copyright © 2026 XunLink (讯联IM). All rights reserved.
+//
+// 平台层服务（saas-api / admin-api）配置加载：单一 config/xlink.yml
+
+package platform
+
+import (
+	"strings"
+
+	"github.com/spf13/viper"
+)
+
+type Config struct {
+	AdminAPI struct {
+		ListenIP string `mapstructure:"listenIP"`
+		Ports    []int  `mapstructure:"ports"`
+	} `mapstructure:"adminAPI"`
+	SaasAPI struct {
+		ListenIP string `mapstructure:"listenIP"`
+		Ports    []int  `mapstructure:"ports"`
+	} `mapstructure:"saasAPI"`
+	Mongo struct {
+		Address     []string `mapstructure:"address"`
+		Database    string   `mapstructure:"database"`
+		Username    string   `mapstructure:"username"`
+		Password    string   `mapstructure:"password"`
+		AuthSource  string   `mapstructure:"authSource"`
+		MaxPoolSize int      `mapstructure:"maxPoolSize"`
+	} `mapstructure:"mongo"`
+	JWT struct {
+		PlatformSecret string `mapstructure:"platformSecret"`
+		TenantSecret   string `mapstructure:"tenantSecret"`
+		ExpireDays     int    `mapstructure:"expireDays"`
+	} `mapstructure:"jwt"`
+	OpenIM struct {
+		TokenSecret   string   `mapstructure:"tokenSecret"`
+		IMAdminUserID string   `mapstructure:"imAdminUserID"`
+		EtcdAddress   []string `mapstructure:"etcdAddress"`
+		EtcdRootDir   string   `mapstructure:"etcdRootDir"`
+	} `mapstructure:"openim"`
+	Seed struct {
+		SuperUser     string `mapstructure:"superUser"`
+		SuperPassword string `mapstructure:"superPassword"`
+	} `mapstructure:"seed"`
+}
+
+func LoadConfig(path string) (*Config, error) {
+	v := viper.New()
+	v.SetConfigFile(path)
+	if err := v.ReadInConfig(); err != nil {
+		return nil, err
+	}
+	cfg := &Config{}
+	if err := v.Unmarshal(cfg); err != nil {
+		return nil, err
+	}
+	return cfg, nil
+}
+
+// JoinAddrs MongoDB 多地址逗号拼接（URI host 部分）
+func JoinAddrs(addrs []string) string {
+	return strings.Join(addrs, ",")
+}

@@ -34,9 +34,10 @@ const PlatformTenantID int64 = 0
 // ErrCrossTenant 跨租户访问拒绝（API 错误码 40302）
 var ErrCrossTenant = errs.NewCodeError(40302, "cross tenant operation denied")
 
-// WithTenantID 显式写入租户（网关层调用；值为字符串以兼容 gRPC metadata 传播）
+// WithTenantID 显式写入租户（服务间调用构造 ctx 时使用；值为 []string
+// 以满足 tools gRPC 拦截器 getRpcContext 对自定义头的取值约定）
 func WithTenantID(ctx context.Context, tenantID int64) context.Context {
-	ctx = context.WithValue(ctx, TenantIDKey, strconv.FormatInt(tenantID, 10))
+	ctx = context.WithValue(ctx, TenantIDKey, []string{strconv.FormatInt(tenantID, 10)})
 	// 借用 tools 官方扩展点把键透传到下游 RPC（服务端拦截器会原样恢复为 []string）
 	keys, _ := ctx.Value(constant.RpcCustomHeader).([]string)
 	for _, k := range keys {

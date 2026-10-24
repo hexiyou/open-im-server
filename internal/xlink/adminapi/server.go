@@ -1,0 +1,124 @@
+// Copyright © 2026 XunLink (讯联IM). All rights reserved.
+//
+// admin-api 总后台服务（API 前缀 /platform，字典 API-PLAT-xx）
+
+package adminapi
+
+import (
+	"context"
+	"fmt"
+	"net/http"
+	"strings"
+
+	"github.com/gin-gonic/gin"
+	"github.com/openimsdk/open-im-server/v3/pkg/xlink/platform"
+	"github.com/openimsdk/tools/apiresp"
+	"github.com/openimsdk/tools/errs"
+)
+
+type Server struct {
+	cfg   *platform.Config
+	store *platform.Store
+}
+
+func NewServer(cfg *platform.Config, store *platform.Store) *Server {
+	return &Server{cfg: cfg, store: store}
+}
+
+// SeedSuperAdmin 首次启动时初始化超级管理员（仅当账号表为空）
+func (s *Server) SeedSuperAdmin(ctx context.Context) error {
+	n, err := s.store.CountPlatformAdmins(ctx)
+	if err != nil {
+		return err
+	}
+	if n > 0 {
+		return nil
+	}
+	hash, err := hashPassword(s.cfg.Seed.SuperPassword)
+	if err != nil {
+		return err
+	}
+	admin := &platform.PlatformAdmin{
+		Username:     s.cfg.Seed.SuperUser,
+		PasswordHash: hash,
+		Role:         "super",
+		Status:       1,
+	}
+	if err := s.store.CreatePlatformAdmin(ctx, admin); err != nil {
+		return err
+	}
+	fmt.Printf("[xlink-admin-api] seeded super admin: %s (开发种子账号，生产环境务必修改密码)\n", s.cfg.Seed.SuperUser)
+	return nil
+}
+
+func (s *Server) Router() http.Handler {
+	r := gin.New()
+	r.Use(gin.Recovery())
+	r.Use(func(c *gin.Context) { // operationID 兜底
+		if c.GetHeader("operationID") == "" {
+			c.Request.Header.Set("operationID", fmt.Sprintf("plat-%d", timeNowUnixNano()))
+		}
+		c.Next()
+	})
+
+	r.POST("/platform/auth/login", s.login) // API-PLAT-01
+
+	authed := r.Group("/platform", s.authMiddleware())
+	{
+		// 租户管理 API-PLAT-03/04/05/06
+		authed.GET("/tenants", s.listTenants)
+		authed.POST("/tenants", s.writeGuard(), s.createTenant)
+		authed.PUT("/tenants/:id", s.writeGuard(), s.updateTenant)
+		authed.GET("/tenants/:id/detail", s.tenantDetail)
+		// 套餐管理 API-PLAT-08
+		authed.GET("/plans", s.listPlans)
+		authed.POST("/plans", s.writeGuard(), s.createPlan)
+		// 审计 API-PLAT-15
+		authed.GET("/audit-logs", s.listAuditLogs)
+	}
+	r.GET("/healthz", func(c *gin.Context) { apiresp.GinSuccess(c, gin.H{"status": "ok"}) })
+	return r
+}
+
+// authMiddleware 平台管理员 JWT 鉴权（issuer=xlink:platform）
+func (s *Server) authMiddleware() gin.HandlerFunc {
+	return func(c *gin.Context) {
+		token := c.Request.Header.Get("token")
+		if token == "" {
+			token = bearerToken(c.Request.Header.Get("Authorization"))
+		}
+		if token == "" {
+			apiresp.GinError(c, errs.ErrArgs.WrapMsg("missing token"))
+			c.Abort()
+			return
+		}
+		claims, err := platform.ParseToken(token, s.cfg.JWT.PlatformSecret, platform.IssuerPlatform)
+		if err != nil {
+			apiresp.GinError(c, errs.ErrTokenInvalid.WrapMsg("platform token invalid"))
+			c.Abort()
+			return
+		}
+		c.Set("plat_account", claims.Account)
+		c.Set("plat_role", claims.Role)
+		c.Next()
+	}
+}
+
+// writeGuard 只读角色禁止写操作（错误码 40303）
+func (s *Server) writeGuard() gin.HandlerFunc {
+	return func(c *gin.Context) {
+		if c.GetString("plat_role") == "readonly" {
+			apiresp.GinError(c, errs.NewCodeError(40303, "no permission").WrapMsg("readonly role"))
+			c.Abort()
+			return
+		}
+		c.Next()
+	}
+}
+
+func bearerToken(h string) string {
+	if len(h) > 7 && strings.EqualFold(h[:7], "Bearer ") {
+		return h[7:]
+	}
+	return ""
+}
