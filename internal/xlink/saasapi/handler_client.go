@@ -18,6 +18,7 @@ func (s *Server) clientLogin(c *gin.Context) {
 		TenantCode string `json:"tenantCode"`
 		UserID     string `json:"userID"` // imUserID（t{tid}_u{rand}，登录页展示为"讯联号"）
 		Password   string `json:"password"`
+		PlatformID int32  `json:"platformID"` // 1iOS/2Android/3Windows/4OSX/5Web/6小程序；缺省 5=Web
 	}
 	if err := c.ShouldBindJSON(&req); err != nil || req.TenantCode == "" || req.UserID == "" || req.Password == "" {
 		apiresp.GinError(c, errs.ErrArgs.WrapMsg("tenantCode/userID/password required"))
@@ -52,7 +53,11 @@ func (s *Server) clientLogin(c *gin.Context) {
 		return
 	}
 	ctx := s.guestCtx(c, tenant.TenantUID)
-	imToken, expire, err := s.issueIMToken(ctx, staff.IMUserID)
+	imPlatform := req.PlatformID
+	if imPlatform == 0 {
+		imPlatform = 5
+	}
+	imToken, expire, err := s.issueIMToken(ctx, staff.IMUserID, imPlatform)
 	if err != nil {
 		apiresp.GinError(c, err)
 		return

@@ -64,12 +64,15 @@ func (s *Server) rateLimit(c *gin.Context, tenantID int64) error {
 }
 
 // issueIMToken 经 auth rpc 签发 OpenIM token（ctx opUserID=平台管理员 以通过 CheckAdmin）
-func (s *Server) issueIMToken(ctx context.Context, userID string) (string, int64, error) {
+func (s *Server) issueIMToken(ctx context.Context, userID string, platformID int32) (string, int64, error) {
 	opCtx := mcontext.WithOpUserIDContext(ctx, s.cfg.OpenIM.IMAdminUserID)
 	authClient := pbauth.NewAuthClient(s.authConn)
+	if platformID == 0 {
+		platformID = guestPlatformID
+	}
 	resp, err := authClient.GetUserToken(opCtx, &pbauth.GetUserTokenReq{
 		UserID:     userID,
-		PlatformID: guestPlatformID,
+		PlatformID: platformID,
 	})
 	if err != nil {
 		return "", 0, errs.WrapMsg(err, "issue im token failed")
@@ -157,7 +160,7 @@ func (s *Server) guestInit(c *gin.Context) {
 		apiresp.GinError(c, err)
 		return
 	}
-	imToken, expire, err := s.issueIMToken(ctx, guestIMUserID)
+	imToken, expire, err := s.issueIMToken(ctx, guestIMUserID, 0)
 	if err != nil {
 		apiresp.GinError(c, err)
 		return
@@ -196,7 +199,7 @@ func (s *Server) guestRenew(c *gin.Context) {
 	}
 	_ = s.store.TouchGuestActive(c, guest.ID)
 	ctx := s.guestCtx(c, tenant.TenantUID)
-	imToken, expire, err := s.issueIMToken(ctx, guest.IMUserID)
+	imToken, expire, err := s.issueIMToken(ctx, guest.IMUserID, 0)
 	if err != nil {
 		apiresp.GinError(c, err)
 		return
