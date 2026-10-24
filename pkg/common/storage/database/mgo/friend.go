@@ -18,6 +18,7 @@ import (
 	"context"
 	"github.com/openimsdk/open-im-server/v3/pkg/common/storage/database"
 	"github.com/openimsdk/open-im-server/v3/pkg/common/storage/model"
+	"github.com/openimsdk/open-im-server/v3/pkg/xlink/tenantctx"
 	"go.mongodb.org/mongo-driver/bson/primitive"
 	"time"
 
@@ -60,12 +61,17 @@ func (f *FriendMgo) friendSort() any {
 
 // Create inserts multiple friend records.
 func (f *FriendMgo) Create(ctx context.Context, friends []*model.Friend) error {
+	// [XunLink] 落租户归属（T-91）
+	tenantID := tenantctx.GetTenantID(ctx)
 	for i, friend := range friends {
 		if friend.ID.IsZero() {
 			friends[i].ID = primitive.NewObjectID()
 		}
 		if friend.CreateTime.IsZero() {
 			friends[i].CreateTime = time.Now()
+		}
+		if friend.TenantID == 0 {
+			friends[i].TenantID = tenantID
 		}
 	}
 	return mongoutil.IncrVersion(func() error {

@@ -20,6 +20,7 @@ import (
 	"github.com/openimsdk/open-im-server/v3/pkg/common/prommetrics"
 	"github.com/openimsdk/open-im-server/v3/pkg/msgprocessor"
 	"github.com/openimsdk/open-im-server/v3/pkg/util/conversationutil"
+	"github.com/openimsdk/open-im-server/v3/pkg/xlink/tenantctx"
 	"github.com/openimsdk/protocol/constant"
 	pbconversation "github.com/openimsdk/protocol/conversation"
 	pbmsg "github.com/openimsdk/protocol/msg"
@@ -34,6 +35,18 @@ import (
 func (m *msgServer) SendMsg(ctx context.Context, req *pbmsg.SendMsgReq) (*pbmsg.SendMsgResp, error) {
 	if req.MsgData != nil {
 		m.encapsulateMsgData(req.MsgData)
+		// [XunLink] 多租户隔离闸门（错误码 40302）：单聊校验收发双方同租户，
+		// 群聊校验发送者与群同租户；通知消息为系统行为放行（错误码见 API 接口字典 §6）
+		switch req.MsgData.SessionType {
+		case constant.SingleChatType:
+			if err := tenantctx.CheckSameTenant(req.MsgData.SendID, req.MsgData.RecvID); err != nil {
+				return nil, err
+			}
+		case constant.ReadGroupChatType:
+			if err := tenantctx.CheckSameTenant(req.MsgData.SendID, req.MsgData.GroupID); err != nil {
+				return nil, err
+			}
+		}
 		switch req.MsgData.SessionType {
 		case constant.SingleChatType:
 			return m.sendMsgSingleChat(ctx, req)

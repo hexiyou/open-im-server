@@ -34,6 +34,7 @@ import (
 	"github.com/openimsdk/open-im-server/v3/pkg/common/convert"
 	"github.com/openimsdk/open-im-server/v3/pkg/common/servererrs"
 	"github.com/openimsdk/open-im-server/v3/pkg/common/storage/controller"
+	"github.com/openimsdk/open-im-server/v3/pkg/xlink/tenantctx"
 	"github.com/openimsdk/protocol/constant"
 	"github.com/openimsdk/protocol/relation"
 	"github.com/openimsdk/protocol/sdkws"
@@ -141,6 +142,10 @@ func (s *friendServer) ApplyToAddFriend(ctx context.Context, req *relation.Apply
 	if err := authverify.CheckAccessV3(ctx, req.FromUserID, s.config.Share.IMAdminUserID); err != nil {
 		return nil, err
 	}
+	// [XunLink] 好友申请双方必须同租户（平台账号除外，错误码 40302）
+	if err := tenantctx.CheckSameTenant(req.FromUserID, req.ToUserID); err != nil {
+		return nil, err
+	}
 	if req.ToUserID == req.FromUserID {
 		return nil, servererrs.ErrCanNotAddYourself.WrapMsg("req.ToUserID", req.ToUserID)
 	}
@@ -174,6 +179,12 @@ func (s *friendServer) ImportFriends(ctx context.Context, req *relation.ImportFr
 
 	if err := s.userClient.CheckUser(ctx, append([]string{req.OwnerUserID}, req.FriendUserIDs...)); err != nil {
 		return nil, err
+	}
+	// [XunLink] 导入好友：目标与归属者必须同租户（平台账号除外，错误码 40302）
+	for _, friendUserID := range req.FriendUserIDs {
+		if err := tenantctx.CheckSameTenant(req.OwnerUserID, friendUserID); err != nil {
+			return nil, err
+		}
 	}
 	if datautil.Contain(req.OwnerUserID, req.FriendUserIDs...) {
 		return nil, servererrs.ErrCanNotAddYourself.WrapMsg("can not add yourself")

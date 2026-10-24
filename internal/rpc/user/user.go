@@ -42,6 +42,7 @@ import (
 	"github.com/openimsdk/open-im-server/v3/pkg/common/convert"
 	"github.com/openimsdk/open-im-server/v3/pkg/common/servererrs"
 	"github.com/openimsdk/open-im-server/v3/pkg/common/storage/controller"
+	"github.com/openimsdk/open-im-server/v3/pkg/xlink/tenantctx"
 	"github.com/openimsdk/protocol/constant"
 	"github.com/openimsdk/protocol/sdkws"
 	pbuser "github.com/openimsdk/protocol/user"
@@ -292,6 +293,11 @@ func (s *userServer) UserRegister(ctx context.Context, req *pbuser.UserRegisterR
 		}
 		if strings.Contains(user.UserID, ":") {
 			return nil, errs.ErrArgs.WrapMsg("userID contains ':' is invalid userID")
+		}
+		// [XunLink] 租户前缀校验（错误码 40302）：租户上下文注册的账号必须属于本租户；
+		// 平台管理员（租户0）可注册任意编码账号（含 t{tid}_ 前缀，供 saas-api 开户）
+		if err := tenantctx.CheckTenantUser(ctx, user.UserID); err != nil {
+			return nil, err
 		}
 		userIDs = append(userIDs, user.UserID)
 	}

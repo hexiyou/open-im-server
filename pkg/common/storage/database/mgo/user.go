@@ -18,6 +18,7 @@ import (
 	"context"
 	"github.com/openimsdk/open-im-server/v3/pkg/common/storage/database"
 	"github.com/openimsdk/open-im-server/v3/pkg/common/storage/model"
+	"github.com/openimsdk/open-im-server/v3/pkg/xlink/tenantctx"
 	"time"
 
 	"github.com/openimsdk/protocol/user"
@@ -41,6 +42,16 @@ func NewUserMongo(db *mongo.Database) (database.User, error) {
 	if err != nil {
 		return nil, errs.Wrap(err)
 	}
+	// [XunLink] 租户维度索引（T-90）：租户作用域查询的前缀
+	_, err = coll.Indexes().CreateOne(context.Background(), mongo.IndexModel{
+		Keys: bson.D{
+			{Key: "tenant_id", Value: 1},
+			{Key: "user_id", Value: 1},
+		},
+	})
+	if err != nil {
+		return nil, errs.Wrap(err)
+	}
 	return &UserMgo{coll: coll}, nil
 }
 
@@ -48,7 +59,22 @@ type UserMgo struct {
 	coll *mongo.Collection
 }
 
+// [XunLink] 租户作用域过滤器：租户上下文 >0 时强制过滤；平台租户（0）不过滤（管理台全量视角）
+func tenantScope(ctx context.Context) bson.M {
+	if tenantctx.GetTenantID(ctx) > 0 {
+		return bson.M{"tenant_id": tenantctx.GetTenantID(ctx)}
+	}
+	return nil
+}
+
 func (u *UserMgo) Create(ctx context.Context, users []*model.User) error {
+	// [XunLink] 创建时按 ctx 落租户归属（T-90）
+	tenantID := tenantctx.GetTenantID(ctx)
+	for _, user := range users {
+		if user.TenantID == 0 {
+			user.TenantID = tenantID
+		}
+	}
 	return mongoutil.InsertMany(ctx, u.coll, users)
 }
 
@@ -68,15 +94,31 @@ func (u *UserMgo) Take(ctx context.Context, userID string) (user *model.User, er
 }
 
 func (u *UserMgo) TakeNotification(ctx context.Context, level int64) (user []*model.User, err error) {
-	return mongoutil.Find[*model.User](ctx, u.coll, bson.M{"app_manger_level": level})
+	// [XunLink] 通知/管理账号查询：租户上下文限定租户内账号，平台租户查询平台账号（T-90）
+	filter := bson.M{"app_manger_level": level}
+	if scope := tenantScope(ctx); scope != nil {
+		filter["$or"] = []bson.M{scope, {"app_manger_level": level, "tenant_id": 0}}
+	}
+	return mongoutil.Find[*model.User](ctx, u.coll, filter)
 }
 
 func (u *UserMgo) TakeByNickname(ctx context.Context, nickname string) (user []*model.User, err error) {
-	return mongoutil.Find[*model.User](ctx, u.coll, bson.M{"nickname": nickname})
+	filter := bson.M{"nickname": nickname}
+	if scope := tenantScope(ctx); scope != nil {
+		for k, v := range scope {
+			filter[k] = v
+		}
+	}
+	return mongoutil.Find[*model.User](ctx, u.coll, filter)
 }
 
 func (u *UserMgo) Page(ctx context.Context, pagination pagination.Pagination) (count int64, users []*model.User, err error) {
-	return mongoutil.FindPage[*model.User](ctx, u.coll, bson.M{}, pagination)
+	// [XunLink] 租户作用域过滤（T-90）
+	filter := bson.M{}
+	if scope := tenantScope(ctx); scope != nil {
+		filter = scope
+	}
+	return mongoutil.FindPage[*model.User](ctx, u.coll, filter, pagination)
 }
 
 func (u *UserMgo) PageFindUser(ctx context.Context, level1 int64, level2 int64, pagination pagination.Pagination) (count int64, users []*model.User, err error) {
@@ -85,6 +127,10 @@ func (u *UserMgo) PageFindUser(ctx context.Context, level1 int64, level2 int64, 
 			{"app_manger_level": level1},
 			{"app_manger_level": level2},
 		},
+	}
+	// [XunLink] 租户作用域过滤（T-90）
+	if scope := tenantScope(ctx); scope != nil {
+		query = bson.M{"$and": []bson.M{scope, query}}
 	}
 
 	return mongoutil.FindPage[*model.User](ctx, u.coll, query, pagination)
@@ -121,12 +167,22 @@ func (u *UserMgo) PageFindUserWithKeyword(
 		query["$and"] = append(query["$and"].([]bson.M), bson.M{"$or": userConditions})
 	}
 
+	// [XunLink] 租户作用域过滤（T-90）
+	if scope := tenantScope(ctx); scope != nil {
+		query["$and"] = append(query["$and"].([]bson.M), scope)
+	}
+
 	// Perform the paginated search
 	return mongoutil.FindPage[*model.User](ctx, u.coll, query, pagination)
 }
 
 func (u *UserMgo) GetAllUserID(ctx context.Context, pagination pagination.Pagination) (int64, []string, error) {
-	return mongoutil.FindPage[string](ctx, u.coll, bson.M{}, pagination, options.Find().SetProjection(bson.M{"_id": 0, "user_id": 1}))
+	// [XunLink] 租户作用域过滤（T-90）
+	filter := bson.M{}
+	if scope := tenantScope(ctx); scope != nil {
+		filter = scope
+	}
+	return mongoutil.FindPage[string](ctx, u.coll, filter, pagination, options.Find().SetProjection(bson.M{"_id": 0, "user_id": 1}))
 }
 
 func (u *UserMgo) Exist(ctx context.Context, userID string) (exist bool, err error) {
@@ -138,10 +194,15 @@ func (u *UserMgo) GetUserGlobalRecvMsgOpt(ctx context.Context, userID string) (o
 }
 
 func (u *UserMgo) CountTotal(ctx context.Context, before *time.Time) (count int64, err error) {
-	if before == nil {
-		return mongoutil.Count(ctx, u.coll, bson.M{})
+	// [XunLink] 租户作用域过滤（T-90）
+	filter := bson.M{}
+	if scope := tenantScope(ctx); scope != nil {
+		filter = scope
 	}
-	return mongoutil.Count(ctx, u.coll, bson.M{"create_time": bson.M{"$lt": before}})
+	if before != nil {
+		filter["create_time"] = bson.M{"$lt": before}
+	}
+	return mongoutil.Count(ctx, u.coll, filter)
 }
 
 func (u *UserMgo) AddUserCommand(ctx context.Context, userID string, Type int32, UUID string, value string, ex string) error {
@@ -286,14 +347,21 @@ func (u *UserMgo) GetAllUserCommand(ctx context.Context, userID string) ([]*user
 	return commands, nil
 }
 func (u *UserMgo) CountRangeEverydayTotal(ctx context.Context, start time.Time, end time.Time) (map[string]int64, error) {
+	match := bson.M{
+		"create_time": bson.M{
+			"$gte": start,
+			"$lt":  end,
+		},
+	}
+	// [XunLink] 租户作用域过滤（T-90）
+	if scope := tenantScope(ctx); scope != nil {
+		for k, v := range scope {
+			match[k] = v
+		}
+	}
 	pipeline := bson.A{
 		bson.M{
-			"$match": bson.M{
-				"create_time": bson.M{
-					"$gte": start,
-					"$lt":  end,
-				},
-			},
+			"$match": match,
 		},
 		bson.M{
 			"$group": bson.M{

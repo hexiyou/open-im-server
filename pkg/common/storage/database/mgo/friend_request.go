@@ -22,6 +22,7 @@ import (
 
 	"github.com/openimsdk/open-im-server/v3/pkg/common/storage/database"
 	"github.com/openimsdk/open-im-server/v3/pkg/common/storage/model"
+	"github.com/openimsdk/open-im-server/v3/pkg/xlink/tenantctx"
 
 	"go.mongodb.org/mongo-driver/bson"
 	"go.mongodb.org/mongo-driver/mongo"
@@ -85,6 +86,13 @@ func (f *FriendRequestMgo) FindBothFriendRequests(ctx context.Context, fromUserI
 }
 
 func (f *FriendRequestMgo) Create(ctx context.Context, friendRequests []*model.FriendRequest) error {
+	// [XunLink] 落租户归属（T-91）
+	tenantID := tenantctx.GetTenantID(ctx)
+	for i, req := range friendRequests {
+		if req.TenantID == 0 {
+			friendRequests[i].TenantID = tenantID
+		}
+	}
 	return mongoutil.InsertMany(ctx, f.coll, friendRequests)
 }
 

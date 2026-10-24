@@ -107,7 +107,8 @@ func (a *authDatabase) CreateToken(ctx context.Context, userID string, platformI
 		}
 	}
 
-	claims := tokenverify.BuildClaims(userID, platformID, a.accessExpire)
+	// [XunLink] token 携带租户 claim（tenantID 取 userID 前缀，签名绑定）
+	claims := authverify.BuildXunLinkClaims(userID, platformID, a.accessExpire)
 	token := jwt.NewWithClaims(jwt.SigningMethodHS256, claims)
 	tokenString, err := token.SignedString([]byte(a.accessSecret))
 	if err != nil {

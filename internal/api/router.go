@@ -23,11 +23,14 @@ import (
 	"github.com/go-playground/validator/v10"
 	"github.com/openimsdk/open-im-server/v3/pkg/common/prommetrics"
 	"github.com/openimsdk/open-im-server/v3/pkg/common/servererrs"
+	"github.com/openimsdk/open-im-server/v3/pkg/xlink/tenantctx"
 	"github.com/openimsdk/protocol/constant"
 	"github.com/openimsdk/tools/apiresp"
 	"github.com/openimsdk/tools/discovery"
 	"github.com/openimsdk/tools/log"
 	"github.com/openimsdk/tools/mw"
+	"slices"
+	"strconv"
 )
 
 const (
@@ -323,6 +326,15 @@ func GinParseToken(authClient *rpcli.AuthClient) gin.HandlerFunc {
 			}
 			c.Set(constant.OpUserPlatform, constant.PlatformIDToName(int(resp.PlatformID)))
 			c.Set(constant.OpUserID, resp.UserID)
+			// [XunLink] 租户上下文：从 userID 前缀推导并写入 ctx，经 RpcCustomHeader 透传下游 RPC
+			tenantID, _ := tenantctx.ParseTenantFromUserID(resp.UserID)
+			c.Set(tenantctx.TenantIDKey, strconv.FormatInt(tenantID, 10))
+			customKeys, _ := c.Get(constant.RpcCustomHeader)
+			keys, _ := customKeys.([]string)
+			if !slices.Contains(keys, tenantctx.TenantIDKey) {
+				keys = append(keys, tenantctx.TenantIDKey)
+			}
+			c.Set(constant.RpcCustomHeader, keys)
 			c.Next()
 		}
 	}

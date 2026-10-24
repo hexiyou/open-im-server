@@ -22,6 +22,7 @@ import (
 
 	"github.com/openimsdk/open-im-server/v3/pkg/authverify"
 	"github.com/openimsdk/open-im-server/v3/pkg/common/convert"
+	"github.com/openimsdk/open-im-server/v3/pkg/xlink/tenantctx"
 	"github.com/openimsdk/protocol/relation"
 	"github.com/openimsdk/protocol/sdkws"
 	"github.com/openimsdk/tools/errs"
@@ -75,6 +76,10 @@ func (s *friendServer) RemoveBlack(ctx context.Context, req *relation.RemoveBlac
 
 func (s *friendServer) AddBlack(ctx context.Context, req *relation.AddBlackReq) (*relation.AddBlackResp, error) {
 	if err := authverify.CheckAccessV3(ctx, req.OwnerUserID, s.config.Share.IMAdminUserID); err != nil {
+		return nil, err
+	}
+	// [XunLink] 拉黑目标必须同租户（平台账号除外，错误码 40302）
+	if err := tenantctx.CheckSameTenant(req.OwnerUserID, req.BlackUserID); err != nil {
 		return nil, err
 	}
 

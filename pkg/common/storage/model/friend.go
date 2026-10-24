@@ -24,6 +24,7 @@ type Friend struct {
 	ID             primitive.ObjectID `bson:"_id"`
 	OwnerUserID    string             `bson:"owner_user_id"`
 	FriendUserID   string             `bson:"friend_user_id"`
+	TenantID       int64              `bson:"tenant_id"` // [XunLink] 所属租户，0=平台（T-91）
 	Remark         string             `bson:"remark"`
 	CreateTime     time.Time          `bson:"create_time"`
 	AddSource      int32              `bson:"add_source"`

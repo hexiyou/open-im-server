@@ -20,6 +20,7 @@ import (
 
 type User struct {
 	UserID           string    `bson:"user_id"`
+	TenantID         int64     `bson:"tenant_id"` // [XunLink] 所属租户，0=平台账号（T-90）
 	Nickname         string    `bson:"nickname"`
 	FaceURL          string    `bson:"face_url"`
 	Ex               string    `bson:"ex"`
