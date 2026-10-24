@@ -6,12 +6,14 @@ package main
 
 import (
 	"context"
+	"crypto/rsa"
 	"flag"
 	"fmt"
 	"net/http"
 	"time"
 
 	"github.com/openimsdk/open-im-server/v3/internal/xlink/adminapi"
+	"github.com/openimsdk/open-im-server/v3/pkg/xlink/license"
 	"github.com/openimsdk/open-im-server/v3/pkg/xlink/platform"
 	"go.mongodb.org/mongo-driver/mongo"
 	"go.mongodb.org/mongo-driver/mongo/options"
@@ -42,7 +44,24 @@ func main() {
 		panic(fmt.Sprintf("connect openim auth rpc failed: %v", err))
 	}
 
-	srv := adminapi.NewServer(cfg, store, authConn)
+	// [XunLink] 一机一码授权：平台侧持私钥签发；私有化实例（enabled=true）启用心跳与门禁
+	var privateKey *rsa.PrivateKey
+	if !cfg.License.Enabled {
+		privateKey, err = license.LoadOrGenerateKeyPair(cfg.License.KeyDir)
+		if err != nil {
+			panic(fmt.Sprintf("init license keypair failed: %v", err))
+		}
+	}
+	gate := platform.NewLicenseGate(cfg.License.Enabled, cfg.License.LocalDir)
+	if cfg.License.Enabled {
+		interval := time.Duration(cfg.License.HeartbeatMinutes) * time.Minute
+		if interval <= 0 {
+			interval = 6 * time.Hour
+		}
+		license.StartHeartbeatLoop(cfg.License.PlatformURL, cfg.License.LocalDir, "xlink-admin-api", interval, nil)
+	}
+
+	srv := adminapi.NewServer(cfg, store, authConn, privateKey, gate)
 	if err := srv.SeedSuperAdmin(context.Background()); err != nil {
 		panic(fmt.Sprintf("seed super admin failed: %v", err))
 	}

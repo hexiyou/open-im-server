@@ -478,6 +478,39 @@ func (s *Store) ListActiveTenantUIDs(ctx context.Context) ([]int64, error) {
 	return uids, nil
 }
 
+/* ---------------- T-04 license（一机一码授权，M3） ---------------- */
+
+func (s *Store) CreateLicense(ctx context.Context, l *License) error {
+	now := time.Now()
+	l.CreatedAt, l.UpdatedAt = now, now
+	return mongoutil.InsertMany(ctx, s.coll(CollLicense), []*License{l})
+}
+
+func (s *Store) GetLicenseByID(ctx context.Context, id primitive.ObjectID) (*License, error) {
+	return mongoutil.FindOne[*License](ctx, s.coll(CollLicense), bson.M{"_id": id})
+}
+
+func (s *Store) GetLicenseByNoAndFP(ctx context.Context, licenseNo, machineFP string) (*License, error) {
+	return mongoutil.FindOne[*License](ctx, s.coll(CollLicense), bson.M{"license_no": licenseNo, "machine_fp": machineFP})
+}
+
+func (s *Store) ListLicenses(ctx context.Context, status string, page Page) (int64, []*License, error) {
+	filter := bson.M{}
+	if status != "" {
+		filter["status"] = status
+	}
+	return mongoutil.FindPage[*License](ctx, s.coll(CollLicense), filter, page,
+		options.Find().SetSort(bson.D{{Key: "created_at", Value: -1}}))
+}
+
+func (s *Store) UpdateLicense(ctx context.Context, id primitive.ObjectID, updates bson.M) error {
+	if updates == nil {
+		updates = bson.M{}
+	}
+	updates["updated_at"] = time.Now()
+	return mongoutil.UpdateOne(ctx, s.coll(CollLicense), bson.M{"_id": id}, bson.M{"$set": updates}, false)
+}
+
 /* ---------------- T-06 租户管理员扩展 ---------------- */
 
 func (s *Store) ListTenantAdmins(ctx context.Context, tenantID int64) ([]*TenantAdmin, error) {

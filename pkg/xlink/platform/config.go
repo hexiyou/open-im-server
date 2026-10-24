@@ -45,6 +45,14 @@ type Config struct {
 	Guest struct {
 		RateLimitPerHour int64 `mapstructure:"rateLimitPerHour"` // 单IP单租户每小时 init 次数上限（42901）
 	} `mapstructure:"guest"`
+	License struct {
+		Enabled          bool   `mapstructure:"enabled"`          // 私有化部署 true；SaaS 平台侧 false
+		KeyDir           string `mapstructure:"keyDir"`           // RSA 密钥目录（admin-api 私钥）
+		PublicKeyPath    string `mapstructure:"publicKeyPath"`    // 公钥路径（验签）
+		LocalDir         string `mapstructure:"localDir"`         // 本地授权文件目录
+		PlatformURL      string `mapstructure:"platformURL"`      // 心跳目标（平台校验服务）
+		HeartbeatMinutes int    `mapstructure:"heartbeatMinutes"` // 心跳间隔（分钟）
+	} `mapstructure:"license"`
 	Seed struct {
 		SuperUser     string `mapstructure:"superUser"`
 		SuperPassword string `mapstructure:"superPassword"`

@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/openimsdk/open-im-server/v3/internal/xlink/saasapi"
+	"github.com/openimsdk/open-im-server/v3/pkg/xlink/license"
 	"github.com/openimsdk/open-im-server/v3/pkg/xlink/platform"
 	"github.com/redis/go-redis/v9"
 	"go.mongodb.org/mongo-driver/mongo"
@@ -49,7 +50,17 @@ func main() {
 	}
 	rdb := redis.NewClient(&redis.Options{Addr: cfg.Redis.Address, Password: cfg.Redis.Password})
 
-	srv := saasapi.NewServer(cfg, store, userConn, authConn, rdb)
+	// [XunLink] 一机一码授权：私有化实例（enabled=true）启用心跳与门禁
+	gate := platform.NewLicenseGate(cfg.License.Enabled, cfg.License.LocalDir)
+	if cfg.License.Enabled {
+		interval := time.Duration(cfg.License.HeartbeatMinutes) * time.Minute
+		if interval <= 0 {
+			interval = 6 * time.Hour
+		}
+		license.StartHeartbeatLoop(cfg.License.PlatformURL, cfg.License.LocalDir, "xlink-saas-api", interval, nil)
+	}
+
+	srv := saasapi.NewServer(cfg, store, userConn, authConn, rdb, gate)
 	srv.StartBackgroundTasks()
 	port := cfg.SaasAPI.Ports[0]
 	addr := fmt.Sprintf("%s:%d", cfg.SaasAPI.ListenIP, port)

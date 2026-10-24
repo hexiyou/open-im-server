@@ -6,6 +6,7 @@ package adminapi
 
 import (
 	"context"
+	"crypto/rsa"
 	"fmt"
 	"net/http"
 	"strings"
@@ -18,13 +19,15 @@ import (
 )
 
 type Server struct {
-	cfg      *platform.Config
-	store    *platform.Store
-	authConn grpc.ClientConnInterface // 租户停用时强制下线成员（auth rpc ForceLogout）
+	cfg        *platform.Config
+	store      *platform.Store
+	authConn   grpc.ClientConnInterface // 租户停用时强制下线成员（auth rpc ForceLogout）
+	privateKey *rsa.PrivateKey          // 激活码签发私钥（SaaS 平台侧；私有化实例为 nil）
+	gate       *platform.LicenseGate    // 授权门禁（私有化实例启用）
 }
 
-func NewServer(cfg *platform.Config, store *platform.Store, authConn grpc.ClientConnInterface) *Server {
-	return &Server{cfg: cfg, store: store, authConn: authConn}
+func NewServer(cfg *platform.Config, store *platform.Store, authConn grpc.ClientConnInterface, privateKey *rsa.PrivateKey, gate *platform.LicenseGate) *Server {
+	return &Server{cfg: cfg, store: store, authConn: authConn, privateKey: privateKey, gate: gate}
 }
 
 // SeedSuperAdmin 首次启动时初始化超级管理员（仅当账号表为空）
@@ -65,7 +68,12 @@ func (s *Server) Router() http.Handler {
 
 	r.POST("/platform/auth/login", s.login) // API-PLAT-01
 
-	authed := r.Group("/platform", s.authMiddleware())
+	// 授权状态查询与内部心跳（任何状态下可用，激活向导依赖）
+	r.GET("/license/status", s.licenseStatus)
+	r.POST("/internal/license/heartbeat", s.licenseHeartbeat)
+	r.POST("/internal/license/activate-report", s.licenseActivateReport)
+
+	authed := r.Group("/platform", s.authMiddleware(), s.licenseGuard())
 	{
 		// 租户管理 API-PLAT-03/04/05/06/07
 		authed.GET("/tenants", s.listTenants)
@@ -76,6 +84,13 @@ func (s *Server) Router() http.Handler {
 		// 套餐管理 API-PLAT-08
 		authed.GET("/plans", s.listPlans)
 		authed.POST("/plans", s.writeGuard(), s.createPlan)
+		// 授权管理 API-PLAT-09/10/11/12/17/18
+		authed.GET("/licenses", s.listLicenses)
+		authed.POST("/licenses/decode-apply", s.writeGuard(), s.decodeApply)
+		authed.POST("/licenses/issue", s.writeGuard(), s.issueLicense)
+		authed.POST("/licenses/:id/revoke", s.writeGuard(), s.revokeLicense)
+		authed.POST("/licenses/:id/rebind", s.writeGuard(), s.rebindLicense)
+		authed.POST("/licenses/:id/renew", s.writeGuard(), s.renewLicense)
 		// 平台管理员管理 API-PLAT-16
 		authed.GET("/admins", s.listAdmins)
 		authed.POST("/admins", s.writeGuard(), s.createAdmin)
@@ -87,9 +102,15 @@ func (s *Server) Router() http.Handler {
 	return r
 }
 
-// authMiddleware 平台管理员 JWT 鉴权（issuer=xlink:platform）
+// authMiddleware 平台管理员 JWT 鉴权（issuer=xlink:platform）+ 授权门禁
 func (s *Server) authMiddleware() gin.HandlerFunc {
 	return func(c *gin.Context) {
+		// [XunLink] 授权门禁：私有化实例降级时锁定管理台（45101/45102）
+		if _, err := s.gate.Check(); err != nil {
+			apiresp.GinError(c, err)
+			c.Abort()
+			return
+		}
 		token := c.Request.Header.Get("token")
 		if token == "" {
 			token = bearerToken(c.Request.Header.Get("Authorization"))

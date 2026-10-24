@@ -37,6 +37,14 @@ redis:
 guest:
   rateLimitPerHour: 50        # 单IP单租户每小时访客 init 上限，超出 42901
 
+license:
+  enabled: false                    # SaaS 平台侧 false（平台即授权方）；私有化部署 true
+  keyDir: ./config                  # RSA 密钥目录（私钥仅平台侧持有，自动生成）
+  publicKeyPath: ./config/xlink-license-public.pem
+  localDir: ./config                # 本地授权文件目录（xlink-license-local.json）
+  platformURL: http://127.0.0.1:10301   # 心跳目标（平台校验服务）
+  heartbeatMinutes: 360             # 心跳间隔（默认 6 小时；联调可调 1）
+
 seed:
   superUser: admin
   superPassword: xlinkAdmin123    # 开发种子账号，生产环境务必修改

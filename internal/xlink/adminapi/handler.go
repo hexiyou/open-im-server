@@ -39,6 +39,11 @@ func pageParams(c *gin.Context) platform.Page {
 /* ---------------- API-PLAT-01 登录 ---------------- */
 
 func (s *Server) login(c *gin.Context) {
+	// [XunLink] 授权门禁：私有化降级时锁定管理台登录（45101/45102）
+	if _, err := s.gate.Check(); err != nil {
+		apiresp.GinError(c, err)
+		return
+	}
 	var req struct {
 		Username string `json:"username"`
 		Password string `json:"password"`

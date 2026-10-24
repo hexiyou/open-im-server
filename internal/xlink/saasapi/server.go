@@ -12,6 +12,7 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"github.com/redis/go-redis/v9"
+	"github.com/openimsdk/open-im-server/v3/pkg/xlink/license"
 	"github.com/openimsdk/open-im-server/v3/pkg/xlink/platform"
 	"github.com/openimsdk/open-im-server/v3/pkg/xlink/tenantctx"
 	"github.com/openimsdk/tools/apiresp"
@@ -25,10 +26,42 @@ type Server struct {
 	userConn grpc.ClientConnInterface
 	authConn grpc.ClientConnInterface
 	rdb      redis.UniversalClient
+	gate     *platform.LicenseGate
 }
 
-func NewServer(cfg *platform.Config, store *platform.Store, userConn, authConn grpc.ClientConnInterface, rdb redis.UniversalClient) *Server {
-	return &Server{cfg: cfg, store: store, userConn: userConn, authConn: authConn, rdb: rdb}
+func NewServer(cfg *platform.Config, store *platform.Store, userConn, authConn grpc.ClientConnInterface, rdb redis.UniversalClient, gate *platform.LicenseGate) *Server {
+	return &Server{cfg: cfg, store: store, userConn: userConn, authConn: authConn, rdb: rdb, gate: gate}
+}
+
+// licenseGuard 授权门禁（私有化降级时 45101/45102）
+func (s *Server) licenseGuard() gin.HandlerFunc {
+	return func(c *gin.Context) {
+		if _, err := s.gate.Check(); err != nil {
+			apiresp.GinError(c, err)
+			c.Abort()
+			return
+		}
+		c.Next()
+	}
+}
+
+func (s *Server) licenseStatus(c *gin.Context) {
+	resp := gin.H{"enabled": s.gate.Enabled()}
+	ll, status, err := license.CurrentState(s.cfg.License.LocalDir)
+	resp["status"] = status
+	if err != nil {
+		if cd, ok := errs.Unwrap(err).(errs.CodeError); ok {
+			resp["code"] = cd.Code()
+		}
+		resp["reason"] = err.Error()
+	}
+	if ll != nil && ll.Payload != nil {
+		resp["licenseNo"] = ll.Payload.LicenseID
+		resp["merchant"] = ll.Payload.Merchant
+		resp["mode"] = ll.Payload.Mode
+		resp["notAfter"] = ll.Payload.NotAfter
+	}
+	apiresp.GinSuccess(c, resp)
 }
 
 func (s *Server) Router() http.Handler {
@@ -41,22 +74,26 @@ func (s *Server) Router() http.Handler {
 		c.Next()
 	})
 
-	r.POST("/tenant/auth/login", s.login) // API-TEN-01
+	r.GET("/license/status", s.licenseStatus)                          // 授权状态（激活向导依赖，任何状态可用）
+	r.POST("/tenant/auth/login", s.licenseGuard(), s.login)            // API-TEN-01
 
-	// 访客免鉴权区（限流+黑名单在 handler 内）API-G-01/02/03/04/05
+	// 访客免鉴权区（限流+黑名单在 handler 内）API-G-01/02/03/04/05；降级时仅保留 config
 	guest := r.Group("/g")
 	{
-		guest.POST("/init", s.guestInit)
-		guest.POST("/renew", s.guestRenew)
 		guest.GET("/config", s.guestConfig)
-		guest.POST("/offline-message", s.guestOfflineMessage)
-		guest.POST("/rate", s.guestRate)
+		blocked := guest.Group("", s.licenseGuard())
+		{
+			blocked.POST("/init", s.guestInit)
+			blocked.POST("/renew", s.guestRenew)
+			blocked.POST("/offline-message", s.guestOfflineMessage)
+			blocked.POST("/rate", s.guestRate)
+		}
 	}
 	// 客户端登录（客服四端凭据）API-C-01
-	r.POST("/c/auth/login", s.clientLogin)
+	r.POST("/c/auth/login", s.licenseGuard(), s.clientLogin)
 
 	// 坐席工作台（IM token 鉴权）API-C-04~07/10
-	agent := r.Group("/c", s.imAuthMiddleware())
+	agent := r.Group("/c", s.imAuthMiddleware(), s.licenseGuard())
 	{
 		agent.POST("/agent/heartbeat", s.agentHeartbeat)
 		agent.GET("/agent/queue", s.agentQueue)
@@ -65,7 +102,7 @@ func (s *Server) Router() http.Handler {
 		agent.POST("/agent/session/:id/close", s.agentCloseSession)
 	}
 
-	authed := r.Group("/tenant", s.authMiddleware())
+	authed := r.Group("/tenant", s.authMiddleware(), s.licenseGuard())
 	{
 		// 成员管理 API-TEN-02/03
 		authed.GET("/staffs", s.listStaffs)
