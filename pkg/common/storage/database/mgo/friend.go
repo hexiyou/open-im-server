@@ -61,8 +61,7 @@ func (f *FriendMgo) friendSort() any {
 
 // Create inserts multiple friend records.
 func (f *FriendMgo) Create(ctx context.Context, friends []*model.Friend) error {
-	// [XunLink] 落租户归属（T-91）
-	tenantID := tenantctx.GetTenantID(ctx)
+	// [XunLink] 落租户归属（T-91）：优先取 OwnerUserID 自带前缀，无前缀才回退 ctx 租户
 	for i, friend := range friends {
 		if friend.ID.IsZero() {
 			friends[i].ID = primitive.NewObjectID()
@@ -71,7 +70,11 @@ func (f *FriendMgo) Create(ctx context.Context, friends []*model.Friend) error {
 			friends[i].CreateTime = time.Now()
 		}
 		if friend.TenantID == 0 {
-			friends[i].TenantID = tenantID
+			if tid, ok := tenantctx.ParseTenantFromUserID(friend.OwnerUserID); ok {
+				friends[i].TenantID = tid
+			} else {
+				friends[i].TenantID = tenantctx.GetTenantID(ctx)
+			}
 		}
 	}
 	return mongoutil.IncrVersion(func() error {

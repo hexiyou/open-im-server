@@ -68,11 +68,15 @@ func tenantScope(ctx context.Context) bson.M {
 }
 
 func (u *UserMgo) Create(ctx context.Context, users []*model.User) error {
-	// [XunLink] 创建时按 ctx 落租户归属（T-90）
-	tenantID := tenantctx.GetTenantID(ctx)
+	// [XunLink] 落租户归属（T-90）：优先取 userID 自带前缀（平台管理员可代租户开户，
+	// 此时 ctx 租户=0 不能作为归属依据），无前缀才回退 ctx 租户
 	for _, user := range users {
 		if user.TenantID == 0 {
-			user.TenantID = tenantID
+			if tid, ok := tenantctx.ParseTenantFromUserID(user.UserID); ok {
+				user.TenantID = tid
+			} else {
+				user.TenantID = tenantctx.GetTenantID(ctx)
+			}
 		}
 	}
 	return mongoutil.InsertMany(ctx, u.coll, users)

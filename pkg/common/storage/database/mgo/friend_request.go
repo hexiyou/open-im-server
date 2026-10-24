@@ -86,11 +86,14 @@ func (f *FriendRequestMgo) FindBothFriendRequests(ctx context.Context, fromUserI
 }
 
 func (f *FriendRequestMgo) Create(ctx context.Context, friendRequests []*model.FriendRequest) error {
-	// [XunLink] 落租户归属（T-91）
-	tenantID := tenantctx.GetTenantID(ctx)
+	// [XunLink] 落租户归属（T-91）：优先取 FromUserID 自带前缀，无前缀才回退 ctx 租户
 	for i, req := range friendRequests {
 		if req.TenantID == 0 {
-			friendRequests[i].TenantID = tenantID
+			if tid, ok := tenantctx.ParseTenantFromUserID(req.FromUserID); ok {
+				friendRequests[i].TenantID = tid
+			} else {
+				friendRequests[i].TenantID = tenantctx.GetTenantID(ctx)
+			}
 		}
 	}
 	return mongoutil.InsertMany(ctx, f.coll, friendRequests)

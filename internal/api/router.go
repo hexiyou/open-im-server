@@ -326,9 +326,10 @@ func GinParseToken(authClient *rpcli.AuthClient) gin.HandlerFunc {
 			}
 			c.Set(constant.OpUserPlatform, constant.PlatformIDToName(int(resp.PlatformID)))
 			c.Set(constant.OpUserID, resp.UserID)
-			// [XunLink] 租户上下文：从 userID 前缀推导并写入 ctx，经 RpcCustomHeader 透传下游 RPC
+			// [XunLink] 租户上下文：从 userID 前缀推导并写入 ctx，经 RpcCustomHeader 透传下游 RPC。
+			// 注意值必须是 []string（tools 拦截器 getRpcContext 按 []string 取自定义头）
 			tenantID, _ := tenantctx.ParseTenantFromUserID(resp.UserID)
-			c.Set(tenantctx.TenantIDKey, strconv.FormatInt(tenantID, 10))
+			c.Set(tenantctx.TenantIDKey, []string{strconv.FormatInt(tenantID, 10)})
 			customKeys, _ := c.Get(constant.RpcCustomHeader)
 			keys, _ := customKeys.([]string)
 			if !slices.Contains(keys, tenantctx.TenantIDKey) {
