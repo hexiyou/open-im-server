@@ -81,6 +81,7 @@ type MsgInfoModel struct {
 	Revoke  *RevokeModel  `bson:"revoke"`
 	DelList []string      `bson:"del_list"`
 	IsRead  bool          `bson:"is_read"`
+	TenantID int64        `bson:"tenant_id"` // [XunLink] 消息租户归属（按 SendID 前缀落，T-92）
 }
 
 type UserCount struct {

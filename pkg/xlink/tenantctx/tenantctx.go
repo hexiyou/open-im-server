@@ -104,6 +104,16 @@ func CheckSameTenant(userIDA, userIDB string) error {
 	return ErrCrossTenant.WrapMsg("userIDA", userIDA, "userIDB", userIDB)
 }
 
+// ScopeKey 租户作用域缓存键（T-93 约定的唯一入口）：
+// 租户上下文 >0 → `t{tid}:{key}`；平台租户 → `global:{key}`。
+// 新增 Redis/缓存键必须经过本函数，禁止直接拼全局裸键。
+func ScopeKey(ctx context.Context, key string) string {
+	if tid := GetTenantID(ctx); tid > PlatformTenantID {
+		return "t" + strconv.FormatInt(tid, 10) + ":" + key
+	}
+	return "global:" + key
+}
+
 // CheckTenantUser 校验 userID 属于 ctx 的租户（平台租户放行所有）
 func CheckTenantUser(ctx context.Context, userID string) error {
 	tenantID := GetTenantID(ctx)

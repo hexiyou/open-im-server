@@ -12,6 +12,7 @@ import (
 
 	"github.com/openimsdk/open-im-server/v3/pkg/common/storage/database"
 	"github.com/openimsdk/open-im-server/v3/pkg/common/storage/model"
+	"github.com/openimsdk/open-im-server/v3/pkg/xlink/tenantctx"
 	"github.com/openimsdk/protocol/constant"
 	"github.com/openimsdk/protocol/msg"
 	"github.com/openimsdk/protocol/sdkws"
@@ -41,6 +42,13 @@ type MsgMgo struct {
 }
 
 func (m *MsgMgo) Create(ctx context.Context, msg *model.MsgDocModel) error {
+	// [XunLink] 消息文档落租户归属（T-92）：同一会话文档可能含双向消息，按每条消息
+	// 的 SendID 前缀逐条落租户（msgtransfer 消费侧无用户 ctx，不依赖上下文）
+	for _, info := range msg.Msg {
+		if info != nil && info.TenantID == 0 && info.Msg != nil {
+			info.TenantID, _ = tenantctx.ParseTenantFromUserID(info.Msg.SendID)
+		}
+	}
 	return mongoutil.InsertMany(ctx, m.coll, []*model.MsgDocModel{msg})
 }
 
