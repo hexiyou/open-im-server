@@ -43,16 +43,27 @@ func (s *Server) Router() http.Handler {
 
 	r.POST("/tenant/auth/login", s.login) // API-TEN-01
 
-	// 访客免鉴权区（限流+黑名单在 handler 内）API-G-01/02/03/04
+	// 访客免鉴权区（限流+黑名单在 handler 内）API-G-01/02/03/04/05
 	guest := r.Group("/g")
 	{
 		guest.POST("/init", s.guestInit)
 		guest.POST("/renew", s.guestRenew)
 		guest.GET("/config", s.guestConfig)
 		guest.POST("/offline-message", s.guestOfflineMessage)
+		guest.POST("/rate", s.guestRate)
 	}
 	// 客户端登录（客服四端凭据）API-C-01
 	r.POST("/c/auth/login", s.clientLogin)
+
+	// 坐席工作台（IM token 鉴权）API-C-04~07/10
+	agent := r.Group("/c", s.imAuthMiddleware())
+	{
+		agent.POST("/agent/heartbeat", s.agentHeartbeat)
+		agent.GET("/agent/queue", s.agentQueue)
+		agent.POST("/agent/claim", s.agentClaim)
+		agent.POST("/agent/transfer", s.agentTransfer)
+		agent.POST("/agent/session/:id/close", s.agentCloseSession)
+	}
 
 	authed := r.Group("/tenant", s.authMiddleware())
 	{
@@ -60,6 +71,9 @@ func (s *Server) Router() http.Handler {
 		authed.GET("/staffs", s.listStaffs)
 		authed.POST("/staffs", s.createStaff)
 		authed.PUT("/staffs/:id", s.updateStaff)
+		// 接待记录 API-TEN-10/11
+		authed.GET("/agent-sessions", s.listSessions)
+		authed.GET("/agent-sessions/:id/messages", s.sessionMessages)
 		// 配额 API-TEN-16
 		authed.GET("/quota", s.quota)
 	}

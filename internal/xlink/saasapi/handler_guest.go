@@ -106,7 +106,8 @@ func (s *Server) guestInit(c *gin.Context) {
 	}
 
 	ctx := s.guestCtx(c, tenant.TenantUID)
-	agent, err := s.store.PickAgent(ctx, tenant.TenantUID)
+	// 坐席调度：仅心跳存活（在线）的坐席参与；Redis 不可用时降级为全池
+	agent, err := s.store.PickAgent(ctx, tenant.TenantUID, s.onlineAgents(ctx, tenant.TenantUID))
 	if err != nil && errs.Unwrap(err) != platform.ErrNoAgentAvailable {
 		apiresp.GinError(c, err)
 		return

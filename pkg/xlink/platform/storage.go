@@ -9,6 +9,7 @@ import (
 	"context"
 	"time"
 
+	msgmodel "github.com/openimsdk/open-im-server/v3/pkg/common/storage/model"
 	"github.com/openimsdk/open-im-server/v3/pkg/xlink/tenantctx"
 	"github.com/openimsdk/tools/db/mongoutil"
 	"github.com/openimsdk/tools/errs"
@@ -314,8 +315,9 @@ func (s *Store) CountActiveByAgent(ctx context.Context, tenantID int64, agentIMU
 		bson.M{"tenant_id": tenantID, "agent_im_user_id": agentIMUserID, "status": bson.M{"$in": []string{"active", "queueing"}}})
 }
 
-// PickAgent 坐席调度（idle_first）：在坐席池中选当前接待数最少的坐席；无可用坐席返回 ErrNoAgentAvailable
-func (s *Store) PickAgent(ctx context.Context, tenantID int64) (*Staff, error) {
+// PickAgent 坐席调度（idle_first）：在候选坐席（在线名单∩坐席池）中选当前接待数最少者；
+// online 传 nil 表示不过滤在线态（Redis 不可用降级）；无候选返回 ErrNoAgentAvailable
+func (s *Store) PickAgent(ctx context.Context, tenantID int64, online map[string]bool) (*Staff, error) {
 	pool, err := s.ListSeatOnStaffs(ctx, tenantID)
 	if err != nil {
 		return nil, err
@@ -323,6 +325,9 @@ func (s *Store) PickAgent(ctx context.Context, tenantID int64) (*Staff, error) {
 	var best *Staff
 	bestLoad := int64(-1)
 	for _, st := range pool {
+		if online != nil && !online[st.IMUserID] {
+			continue
+		}
 		load, err := s.CountActiveByAgent(ctx, tenantID, st.IMUserID)
 		if err != nil {
 			return nil, err
@@ -341,13 +346,136 @@ var ErrNoAgentAvailable = errs.NewCodeError(40402, "no agent available")
 
 /* ---------------- T-09 接待统计（配额写入侧） ---------------- */
 
-func (s *Store) UpsertQuotaUsage(ctx context.Context, tenantID int64, date string, staffActive int32) error {
+func (s *Store) UpsertQuotaUsage(ctx context.Context, tenantID int64, date string, members int32, messages int64) error {
 	_, err := s.coll(CollQuotaUsage).UpdateOne(ctx,
 		bson.M{"tenant_id": tenantID, "date": date},
-		bson.M{"$set": bson.M{"members": staffActive, "updated_at": time.Now()},
-			"$setOnInsert": bson.M{"online_agents": int32(0), "messages": int64(0), "storage_bytes": int64(0)}},
+		bson.M{"$set": bson.M{"members": members, "messages": messages, "updated_at": time.Now()},
+			"$setOnInsert": bson.M{"online_agents": int32(0), "storage_bytes": int64(0)}},
 		options.Update().SetUpsert(true))
 	return errs.Wrap(err)
+}
+
+/* ---------------- T-09 会话操作（坐席工作台） ---------------- */
+
+func (s *Store) GetAgentSession(ctx context.Context, tenantID int64, id primitive.ObjectID) (*AgentSession, error) {
+	return mongoutil.FindOne[*AgentSession](ctx, s.coll(CollAgentSession), bson.M{"tenant_id": tenantID, "_id": id})
+}
+
+func (s *Store) UpdateAgentSession(ctx context.Context, tenantID int64, id primitive.ObjectID, updates bson.M) error {
+	if updates == nil {
+		updates = bson.M{}
+	}
+	updates["updated_at"] = time.Now()
+	return mongoutil.UpdateOne(ctx, s.coll(CollAgentSession), bson.M{"tenant_id": tenantID, "_id": id}, bson.M{"$set": updates}, false)
+}
+
+// ListSessions status 为空则不过滤
+func (s *Store) ListSessions(ctx context.Context, tenantID int64, status, agentIMUserID string, page Page) (int64, []*AgentSession, error) {
+	filter := bson.M{"tenant_id": tenantID}
+	if status != "" {
+		filter["status"] = status
+	}
+	if agentIMUserID != "" {
+		filter["agent_im_user_id"] = agentIMUserID
+	}
+	return mongoutil.FindPage[*AgentSession](ctx, s.coll(CollAgentSession), filter, page,
+		options.Find().SetSort(bson.D{{Key: "created_at", Value: -1}}))
+}
+
+// ListQueueingSessions 排队中会话（认领队列）
+func (s *Store) ListQueueingSessions(ctx context.Context, tenantID int64) ([]*AgentSession, error) {
+	return mongoutil.Find[*AgentSession](ctx, s.coll(CollAgentSession),
+		bson.M{"tenant_id": tenantID, "status": "queueing"}, options.Find().SetSort(bson.D{{Key: "created_at", Value: 1}}))
+}
+
+// GetLatestSessionByGuest 访客最近一次接待（满意度评价用）
+func (s *Store) GetLatestSessionByGuest(ctx context.Context, tenantID int64, guestIMUserID string) (*AgentSession, error) {
+	return mongoutil.FindOne[*AgentSession](ctx, s.coll(CollAgentSession),
+		bson.M{"tenant_id": tenantID, "guest_im_user_id": guestIMUserID},
+		options.FindOne().SetSort(bson.D{{Key: "created_at", Value: -1}}))
+}
+
+// CountMessagesSince 统计租户自 startUnix（秒）以来的消息量（T-10 汇总用）
+func (s *Store) CountMessagesSince(ctx context.Context, tenantID int64, startUnix int64) (int64, error) {
+	type countRes struct {
+		N int64 `bson:"n"`
+	}
+	pipeline := bson.A{
+		bson.M{"$unwind": "$msgs"},
+		bson.M{"$match": bson.M{
+			"msgs.tenant_id":      tenantID,
+			"msgs.msg.send_time": bson.M{"$gte": startUnix},
+		}},
+		bson.M{"$count": "n"},
+	}
+	items, err := mongoutil.Aggregate[countRes](ctx, s.DB.Collection("msg"), pipeline)
+	if err != nil {
+		return 0, errs.Wrap(err)
+	}
+	if len(items) == 0 {
+		return 0, nil
+	}
+	return items[0].N, nil
+}
+
+// GetMessagesByConversation 按会话ID拉取消息（doc_id 前缀匹配 → 逐条过滤租户），按 seq 升序
+func (s *Store) GetMessagesByConversation(ctx context.Context, tenantID int64, conversationID string, limit int) ([]*msgmodel.MsgInfoModel, error) {
+	if limit <= 0 || limit > 500 {
+		limit = 200
+	}
+	docs, err := mongoutil.Find[*msgmodel.MsgDocModel](ctx, s.DB.Collection("msg"),
+		bson.M{"doc_id": primitive.Regex{Pattern: "^" + conversationID + ":"}})
+	if err != nil {
+		return nil, err
+	}
+	var out []*msgmodel.MsgInfoModel
+	for _, doc := range docs {
+		for _, m := range doc.Msg {
+			if m != nil && m.TenantID == tenantID {
+				out = append(out, m)
+			}
+		}
+	}
+	// 按 seq 升序，截取最近 limit 条
+	for i := 0; i < len(out); i++ {
+		for j := i + 1; j < len(out); j++ {
+			if out[j].Msg != nil && out[i].Msg != nil && out[j].Msg.Seq < out[i].Msg.Seq {
+				out[i], out[j] = out[j], out[i]
+			}
+		}
+	}
+	if len(out) > limit {
+		out = out[len(out)-limit:]
+	}
+	return out, nil
+}
+
+// ArchiveInactiveGuests 归档超过 retainDays 无活动的访客，返回归档数量
+func (s *Store) ArchiveInactiveGuests(ctx context.Context, retainDays int) (int64, error) {
+	if retainDays <= 0 {
+		retainDays = 30
+	}
+	cutoff := time.Now().AddDate(0, 0, -retainDays)
+	res, err := s.coll(CollGuest).UpdateMany(ctx,
+		bson.M{"status": 1, "last_active_at": bson.M{"$lt": cutoff}},
+		bson.M{"$set": bson.M{"status": 2, "updated_at": time.Now()}})
+	if err != nil {
+		return 0, errs.Wrap(err)
+	}
+	return res.ModifiedCount, nil
+}
+
+// ListActiveTenantUIDs 所有正常状态的租户UID（后台任务遍历用）
+func (s *Store) ListActiveTenantUIDs(ctx context.Context) ([]int64, error) {
+	tenants, err := mongoutil.Find[*Tenant](ctx, s.coll(CollTenant), bson.M{"status": 1, "deleted_at": nil})
+	if err != nil {
+		return nil, err
+	}
+	uids := make([]int64, 0, len(tenants))
+	for _, t := range tenants {
+		uids = append(uids, t.TenantUID)
+	}
+	return uids, nil
 }
 
 /* ---------------- T-06 租户管理员扩展 ---------------- */

@@ -50,6 +50,7 @@ func main() {
 	rdb := redis.NewClient(&redis.Options{Addr: cfg.Redis.Address, Password: cfg.Redis.Password})
 
 	srv := saasapi.NewServer(cfg, store, userConn, authConn, rdb)
+	srv.StartBackgroundTasks()
 	port := cfg.SaasAPI.Ports[0]
 	addr := fmt.Sprintf("%s:%d", cfg.SaasAPI.ListenIP, port)
 	fmt.Printf("[xlink-saas-api] listening on %s\n", addr)

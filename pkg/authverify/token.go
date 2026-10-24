@@ -46,6 +46,26 @@ func BuildXunLinkClaims(uid string, platformID int, ttl int64) XunLinkClaims {
 	return XunLinkClaims{Claims: base, TenantID: tenantID}
 }
 
+// ParseXunLinkToken 解析本项目签发的 IM token（含 tenantID claim），
+// 供平台层服务（saas-api 坐席端接口等）在网关之外自行校验
+func ParseXunLinkToken(tokenString, secret string) (*XunLinkClaims, error) {
+	token, err := jwt.ParseWithClaims(tokenString, &XunLinkClaims{}, Secret(secret))
+	if err != nil {
+		if ve, ok := err.(*jwt.ValidationError); ok {
+			if ve.Errors&jwt.ValidationErrorExpired != 0 {
+				return nil, servererrs.ErrTokenExpired.WrapMsg("token expired")
+			}
+			return nil, servererrs.ErrTokenInvalid.WrapMsg("token invalid")
+		}
+		return nil, servererrs.ErrTokenUnknown.WrapMsg("token unknown")
+	}
+	claims, ok := token.Claims.(*XunLinkClaims)
+	if !ok || !token.Valid {
+		return nil, servererrs.ErrTokenInvalid.WrapMsg("claims invalid")
+	}
+	return claims, nil
+}
+
 func CheckAccessV3(ctx context.Context, ownerUserID string, imAdminUserID []string) (err error) {
 	opUserID := mcontext.GetOpUserID(ctx)
 	if datautil.Contain(opUserID, imAdminUserID...) {
