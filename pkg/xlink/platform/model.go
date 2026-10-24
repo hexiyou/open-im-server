@@ -154,6 +154,15 @@ type AgentSession struct {
 	UpdatedAt      time.Time          `bson:"updated_at" json:"updatedAt"`
 }
 
+// T-08b guest_blacklist 访客黑名单（指纹级，独立于 guest 文档）
+type GuestBlacklist struct {
+	ID          primitive.ObjectID `bson:"_id,omitempty" json:"id,omitempty"`
+	TenantID    int64              `bson:"tenant_id" json:"tenantID"`
+	Fingerprint string             `bson:"fingerprint" json:"fingerprint"`
+	Note        string             `bson:"note,omitempty" json:"note,omitempty"`
+	CreatedAt   time.Time          `bson:"created_at" json:"createdAt"`
+}
+
 // T-10 tenant_quota_usage 配额用量日汇总
 type QuotaUsage struct {
 	ID           primitive.ObjectID `bson:"_id,omitempty" json:"id,omitempty"`

@@ -97,6 +97,8 @@ func (s *Server) Router() http.Handler {
 		authed.PUT("/admins/:id", s.writeGuard(), s.updateAdmin)
 		// 审计 API-PLAT-15
 		authed.GET("/audit-logs", s.listAuditLogs)
+		// 工作台指标 API-PLAT-13
+		authed.GET("/metrics/overview", s.metricsOverview)
 	}
 	r.GET("/healthz", func(c *gin.Context) { apiresp.GinSuccess(c, gin.H{"status": "ok"}) })
 	return r

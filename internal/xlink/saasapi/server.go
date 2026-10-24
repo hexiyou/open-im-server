@@ -108,6 +108,15 @@ func (s *Server) Router() http.Handler {
 		authed.GET("/staffs", s.listStaffs)
 		authed.POST("/staffs", s.createStaff)
 		authed.PUT("/staffs/:id", s.updateStaff)
+		// 访客接入/黑名单/组件代码/日汇总 API-TEN-07/08/09
+		authed.GET("/guest-config", s.getGuestConfig)
+		authed.PUT("/guest-config", s.putGuestConfig)
+		authed.GET("/guest-blacklist", s.listBlacklist)
+		authed.POST("/guest-blacklist", s.addBlacklist)
+		authed.DELETE("/guest-blacklist/:id", s.removeBlacklist)
+		authed.GET("/widget-code", s.getWidgetCode)
+		authed.PUT("/widget-code", s.putWidgetCode)
+		authed.GET("/stats/daily", s.statsDaily)
 		// 接待记录 API-TEN-10/11
 		authed.GET("/agent-sessions", s.listSessions)
 		authed.GET("/agent-sessions/:id/messages", s.sessionMessages)

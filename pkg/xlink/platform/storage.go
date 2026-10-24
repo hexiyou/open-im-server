@@ -29,6 +29,7 @@ const (
 	CollTenantAdmin   = "tenant_admin"
 	CollStaff         = "staff"
 	CollGuest         = "guest"
+	CollGuestBlack    = "guest_blacklist"
 	CollAgentSession  = "agent_session"
 	CollQuotaUsage    = "tenant_quota_usage"
 )
@@ -84,6 +85,22 @@ func (s *Store) ensureIndexes(ctx context.Context) error {
 		CollStaff: {
 			mongo.IndexModel{Keys: bson.D{{Key: "im_user_id", Value: 1}}, Options: options.Index().SetUnique(true)},
 			mongo.IndexModel{Keys: bson.D{{Key: "tenant_id", Value: 1}, {Key: "status", Value: 1}}},
+		},
+		CollGuest: {
+			mongo.IndexModel{Keys: bson.D{{Key: "im_user_id", Value: 1}}, Options: options.Index().SetUnique(true)},
+			mongo.IndexModel{Keys: bson.D{{Key: "tenant_id", Value: 1}, {Key: "last_active_at", Value: -1}}},
+			mongo.IndexModel{Keys: bson.D{{Key: "history_key", Value: 1}}},
+		},
+		CollGuestBlack: {
+			mongo.IndexModel{Keys: bson.D{{Key: "tenant_id", Value: 1}, {Key: "fingerprint", Value: 1}}, Options: options.Index().SetUnique(true)},
+		},
+		CollAgentSession: {
+			mongo.IndexModel{Keys: bson.D{{Key: "tenant_id", Value: 1}, {Key: "status", Value: 1}, {Key: "claimed_at", Value: -1}}},
+			mongo.IndexModel{Keys: bson.D{{Key: "conversation_id", Value: 1}}},
+			mongo.IndexModel{Keys: bson.D{{Key: "agent_im_user_id", Value: 1}, {Key: "claimed_at", Value: -1}}},
+		},
+		CollQuotaUsage: {
+			mongo.IndexModel{Keys: bson.D{{Key: "tenant_id", Value: 1}, {Key: "date", Value: 1}}, Options: options.Index().SetUnique(true)},
 		},
 	}
 	for name, models := range indexes {
@@ -400,12 +417,13 @@ func (s *Store) CountMessagesSince(ctx context.Context, tenantID int64, startUni
 	type countRes struct {
 		N int64 `bson:"n"`
 	}
+	match := bson.M{"msgs.msg.send_time": bson.M{"$gte": startUnix}}
+	if tenantID > 0 {
+		match["msgs.tenant_id"] = tenantID // 0 = 全平台（metrics 汇总用）
+	}
 	pipeline := bson.A{
 		bson.M{"$unwind": "$msgs"},
-		bson.M{"$match": bson.M{
-			"msgs.tenant_id":      tenantID,
-			"msgs.msg.send_time": bson.M{"$gte": startUnix},
-		}},
+		bson.M{"$match": match},
 		bson.M{"$count": "n"},
 	}
 	items, err := mongoutil.Aggregate[countRes](ctx, s.DB.Collection("msg"), pipeline)
@@ -416,6 +434,11 @@ func (s *Store) CountMessagesSince(ctx context.Context, tenantID int64, startUni
 		return 0, nil
 	}
 	return items[0].N, nil
+}
+
+// CountDocs 通用集合计数（metrics 汇总用）
+func (s *Store) CountDocs(ctx context.Context, collection string, filter bson.M) (int64, error) {
+	return mongoutil.Count(ctx, s.coll(collection), filter)
 }
 
 // GetMessagesByConversation 按会话ID拉取消息（doc_id 前缀匹配 → 逐条过滤租户），按 seq 升序
@@ -509,6 +532,54 @@ func (s *Store) UpdateLicense(ctx context.Context, id primitive.ObjectID, update
 	}
 	updates["updated_at"] = time.Now()
 	return mongoutil.UpdateOne(ctx, s.coll(CollLicense), bson.M{"_id": id}, bson.M{"$set": updates}, false)
+}
+
+/* ---------------- T-08b 访客黑名单 ---------------- */
+
+func (s *Store) ListGuestBlacklist(ctx context.Context, tenantID int64) ([]*GuestBlacklist, error) {
+	return mongoutil.Find[*GuestBlacklist](ctx, s.coll(CollGuestBlack),
+		bson.M{"tenant_id": tenantID}, options.Find().SetSort(bson.D{{Key: "created_at", Value: -1}}))
+}
+
+func (s *Store) AddGuestBlacklist(ctx context.Context, tenantID int64, fingerprint, note string) error {
+	b := &GuestBlacklist{TenantID: tenantID, Fingerprint: fingerprint, Note: note, CreatedAt: time.Now()}
+	return mongoutil.InsertMany(ctx, s.coll(CollGuestBlack), []*GuestBlacklist{b})
+}
+
+func (s *Store) RemoveGuestBlacklist(ctx context.Context, tenantID int64, id primitive.ObjectID) error {
+	return mongoutil.DeleteOne(ctx, s.coll(CollGuestBlack), bson.M{"tenant_id": tenantID, "_id": id})
+}
+
+func (s *Store) IsGuestBlacklisted(ctx context.Context, tenantID int64, fingerprint string) (bool, error) {
+	if fingerprint == "" {
+		return false, nil
+	}
+	return mongoutil.Exist(ctx, s.coll(CollGuestBlack), bson.M{"tenant_id": tenantID, "fingerprint": fingerprint})
+}
+
+// UpdateTenantConfig 合并更新租户 config JSON（商户后台访客接入设置等）
+func (s *Store) UpdateTenantConfig(ctx context.Context, tenantUID int64, merge map[string]any) error {
+	t, err := s.GetTenantByUID(ctx, tenantUID)
+	if err != nil {
+		return err
+	}
+	cfg := t.Config
+	if cfg == nil {
+		cfg = map[string]any{}
+	}
+	for k, v := range merge {
+		cfg[k] = v
+	}
+	return s.UpdateTenant(ctx, t.ID, bson.M{"config": cfg})
+}
+
+// ListQuotaUsage 近 N 天日汇总（报表用）
+func (s *Store) ListQuotaUsage(ctx context.Context, tenantID int64, limit int) ([]*QuotaUsage, error) {
+	if limit <= 0 || limit > 90 {
+		limit = 14
+	}
+	return mongoutil.Find[*QuotaUsage](ctx, s.coll(CollQuotaUsage),
+		bson.M{"tenant_id": tenantID}, options.Find().SetSort(bson.D{{Key: "date", Value: -1}}).SetLimit(int64(limit)))
 }
 
 /* ---------------- T-06 租户管理员扩展 ---------------- */

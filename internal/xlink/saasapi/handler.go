@@ -55,6 +55,22 @@ func tenantIDOf(c *gin.Context) int64 {
 	return tid
 }
 
+// audit 商户后台操作审计（统一入口）
+func (s *Server) audit(c *gin.Context, action, target string, detail map[string]any) {
+	entry := &platform.AuditLog{
+		TenantID:  tenantIDOf(c),
+		ActorType: "tenant",
+		ActorName: c.GetString("tenant_account"),
+		Action:    action,
+		Target:    target,
+		Detail:    detail,
+		IP:        c.ClientIP(),
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	_ = s.store.InsertAudit(ctx, entry)
+}
+
 /* ---------------- API-TEN-01 商户后台登录 ---------------- */
 
 func (s *Server) login(c *gin.Context) {

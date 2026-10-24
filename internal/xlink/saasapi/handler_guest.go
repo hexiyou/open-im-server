@@ -100,7 +100,7 @@ func (s *Server) guestInit(c *gin.Context) {
 	}
 	fpHash := sha256.Sum256([]byte(c.ClientIP() + "|" + c.Request.Header.Get("User-Agent")))
 	fingerprint := hex.EncodeToString(fpHash[:])
-	if blocked, _ := s.store.GetGuestFingerprintBlocked(c, tenant.TenantUID, fingerprint); blocked {
+	if blocked, _ := s.store.IsGuestBlacklisted(c, tenant.TenantUID, fingerprint); blocked {
 		apiresp.GinError(c, errs.NewCodeError(40303, "blocked").WrapMsg("fingerprint blocked"))
 		return
 	}
