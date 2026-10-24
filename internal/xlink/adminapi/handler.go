@@ -204,6 +204,12 @@ func (s *Server) updateTenant(c *gin.Context) {
 		apiresp.GinError(c, err)
 		return
 	}
+	// [XunLink] 停用联动：租户置为停用（status=2）时强制下线其全部成员的 IM 会话
+	if req.Status != nil && *req.Status == 2 {
+		if tenant, err := s.store.GetTenantByID(c, id); err == nil {
+			s.forceLogoutTenantStaffs(tenant.TenantUID)
+		}
+	}
 	s.audit(c, "tenant.update", c.Param("id"), updates)
 	apiresp.GinSuccess(c, gin.H{"updated": len(updates)})
 }

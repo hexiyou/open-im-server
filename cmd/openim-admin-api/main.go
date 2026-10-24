@@ -37,8 +37,12 @@ func main() {
 	if err != nil {
 		panic(fmt.Sprintf("init platform store failed: %v", err))
 	}
+	authConn, err := platform.BuildRpcConn(context.Background(), cfg, "auth")
+	if err != nil {
+		panic(fmt.Sprintf("connect openim auth rpc failed: %v", err))
+	}
 
-	srv := adminapi.NewServer(cfg, store)
+	srv := adminapi.NewServer(cfg, store, authConn)
 	if err := srv.SeedSuperAdmin(context.Background()); err != nil {
 		panic(fmt.Sprintf("seed super admin failed: %v", err))
 	}

@@ -30,6 +30,13 @@ openim:
   etcdAddress: [ localhost:12379 ]
   etcdRootDir: openim
 
+redis:
+  address: localhost:16379
+  password: openIM123
+
+guest:
+  rateLimitPerHour: 50        # 单IP单租户每小时访客 init 上限，超出 42901
+
 seed:
   superUser: admin
   superPassword: xlinkAdmin123    # 开发种子账号，生产环境务必修改

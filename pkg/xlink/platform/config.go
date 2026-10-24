@@ -38,6 +38,13 @@ type Config struct {
 		EtcdAddress   []string `mapstructure:"etcdAddress"`
 		EtcdRootDir   string   `mapstructure:"etcdRootDir"`
 	} `mapstructure:"openim"`
+	Redis struct {
+		Address  string `mapstructure:"address"`
+		Password string `mapstructure:"password"`
+	} `mapstructure:"redis"`
+	Guest struct {
+		RateLimitPerHour int64 `mapstructure:"rateLimitPerHour"` // 单IP单租户每小时 init 次数上限（42901）
+	} `mapstructure:"guest"`
 	Seed struct {
 		SuperUser     string `mapstructure:"superUser"`
 		SuperPassword string `mapstructure:"superPassword"`

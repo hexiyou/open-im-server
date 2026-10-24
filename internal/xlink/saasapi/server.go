@@ -6,55 +6,29 @@
 package saasapi
 
 import (
-	"context"
 	"fmt"
 	"net/http"
 	"strings"
 
 	"github.com/gin-gonic/gin"
-	kdisc "github.com/openimsdk/open-im-server/v3/pkg/common/discoveryregister"
-	"github.com/openimsdk/open-im-server/v3/pkg/common/config"
+	"github.com/redis/go-redis/v9"
 	"github.com/openimsdk/open-im-server/v3/pkg/xlink/platform"
 	"github.com/openimsdk/open-im-server/v3/pkg/xlink/tenantctx"
 	"github.com/openimsdk/tools/apiresp"
 	"github.com/openimsdk/tools/errs"
-	"github.com/openimsdk/tools/mw"
 	"google.golang.org/grpc"
-	"google.golang.org/grpc/credentials/insecure"
 )
 
 type Server struct {
 	cfg      *platform.Config
 	store    *platform.Store
 	userConn grpc.ClientConnInterface
+	authConn grpc.ClientConnInterface
+	rdb      redis.UniversalClient
 }
 
-func NewServer(cfg *platform.Config, store *platform.Store, userConn grpc.ClientConnInterface) *Server {
-	return &Server{cfg: cfg, store: store, userConn: userConn}
-}
-
-// BuildUserConn 建立 OpenIM user rpc 连接（etcd 服务发现）
-func BuildUserConn(ctx context.Context, cfg *platform.Config) (grpc.ClientConnInterface, error) {
-	dis := &config.Discovery{
-		Enable: "etcd",
-		Etcd: config.Etcd{
-			RootDirectory: cfg.OpenIM.EtcdRootDir,
-			Address:       cfg.OpenIM.EtcdAddress,
-		},
-	}
-	share := &config.Share{}
-	share.RpcRegisterName.User = "user"
-	client, err := kdisc.NewDiscoveryRegister(dis, share, nil)
-	if err != nil {
-		return nil, errs.WrapMsg(err, "discovery init failed")
-	}
-	client.AddOption(mw.GrpcClient(), grpc.WithTransportCredentials(insecure.NewCredentials()),
-		grpc.WithDefaultServiceConfig(`{"LoadBalancingPolicy": "round_robin"}`))
-	conn, err := client.GetConn(ctx, share.RpcRegisterName.User)
-	if err != nil {
-		return nil, errs.WrapMsg(err, "connect user rpc failed")
-	}
-	return conn, nil
+func NewServer(cfg *platform.Config, store *platform.Store, userConn, authConn grpc.ClientConnInterface, rdb redis.UniversalClient) *Server {
+	return &Server{cfg: cfg, store: store, userConn: userConn, authConn: authConn, rdb: rdb}
 }
 
 func (s *Server) Router() http.Handler {
@@ -68,6 +42,17 @@ func (s *Server) Router() http.Handler {
 	})
 
 	r.POST("/tenant/auth/login", s.login) // API-TEN-01
+
+	// 访客免鉴权区（限流+黑名单在 handler 内）API-G-01/02/03/04
+	guest := r.Group("/g")
+	{
+		guest.POST("/init", s.guestInit)
+		guest.POST("/renew", s.guestRenew)
+		guest.GET("/config", s.guestConfig)
+		guest.POST("/offline-message", s.guestOfflineMessage)
+	}
+	// 客户端登录（客服四端凭据）API-C-01
+	r.POST("/c/auth/login", s.clientLogin)
 
 	authed := r.Group("/tenant", s.authMiddleware())
 	{

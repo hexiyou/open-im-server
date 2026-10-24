@@ -21,6 +21,7 @@ import (
 	"github.com/openimsdk/tools/mcontext"
 	"go.mongodb.org/mongo-driver/bson/primitive"
 	"golang.org/x/crypto/bcrypt"
+	"google.golang.org/grpc"
 )
 
 func timeNowUnixNano() int64 { return time.Now().UnixNano() }
@@ -35,6 +36,17 @@ func pageParams(c *gin.Context) platform.Page {
 		size = 20
 	}
 	return platform.Page{PageNumber: int32(page), ShowNumber: int32(size)}
+}
+
+// newUserClient / newUserRegisterReq 访客与成员注册共用的 gRPC 便捷封装
+func newUserClient(conn grpc.ClientConnInterface) pbuser.UserClient {
+	return pbuser.NewUserClient(conn)
+}
+
+func newUserRegisterReq(userID, nickname string) *pbuser.UserRegisterReq {
+	return &pbuser.UserRegisterReq{
+		Users: []*sdkws.UserInfo{{UserID: userID, Nickname: nickname}},
+	}
 }
 
 func tenantIDOf(c *gin.Context) int64 {
@@ -126,6 +138,24 @@ func (s *Server) createStaff(c *gin.Context) {
 		seatOn = *req.SeatOn
 	}
 
+	// [XunLink] 席位硬限制（API 错误码 40301）：在职占用席位成员数不得超已购席位
+	if seatOn {
+		tenant, err := s.store.GetTenantByUID(c, tid)
+		if err != nil {
+			apiresp.GinError(c, errs.ErrRecordNotFound.WrapMsg("tenant not found"))
+			return
+		}
+		used, err := s.store.CountSeatOnStaffs(c, tid)
+		if err != nil {
+			apiresp.GinError(c, err)
+			return
+		}
+		if used >= int64(tenant.SeatsPurchased) {
+			apiresp.GinError(c, errs.NewCodeError(40301, "seat limit exceeded"))
+			return
+		}
+	}
+
 	// 生成 IM userID：t{tid}_u{rand8}
 	buf := make([]byte, 4)
 	if _, err := rand.Read(buf); err != nil {
@@ -134,11 +164,24 @@ func (s *Server) createStaff(c *gin.Context) {
 	}
 	imUserID := tenantctx.EncodeUserID(tid, "u"+hex.EncodeToString(buf))
 
+	// 初始密码（一次性返回；bcrypt 入库，/c/auth/login 凭据）
+	pwdBytes := make([]byte, 4)
+	if _, err := rand.Read(pwdBytes); err != nil {
+		apiresp.GinError(c, err)
+		return
+	}
+	initialPassword := "Xl" + hex.EncodeToString(pwdBytes)
+	pwHash, err := bcrypt.GenerateFromPassword([]byte(initialPassword), bcrypt.DefaultCost)
+	if err != nil {
+		apiresp.GinError(c, err)
+		return
+	}
+
 	// 经 gRPC 注册 OpenIM 用户（ctx：opUserID=平台管理员 以通过 CheckAdmin，租户=本租户）
 	opCtx := mcontext.WithOpUserIDContext(mcontext.NewCtx(c.GetHeader("operationID")), s.cfg.OpenIM.IMAdminUserID)
 	opCtx = tenantctx.WithTenantID(opCtx, tid)
 	userClient := pbuser.NewUserClient(s.userConn)
-	_, err := userClient.UserRegister(opCtx, &pbuser.UserRegisterReq{
+	_, err = userClient.UserRegister(opCtx, &pbuser.UserRegisterReq{
 		Users: []*sdkws.UserInfo{{UserID: imUserID, Nickname: req.Name}},
 	})
 	if err != nil {
@@ -147,13 +190,14 @@ func (s *Server) createStaff(c *gin.Context) {
 	}
 
 	staff := &platform.Staff{
-		TenantID: tid,
-		IMUserID: imUserID,
-		Name:     req.Name,
-		Mobile:   req.Mobile,
-		Role:     req.Role,
-		SeatOn:   seatOn,
-		Status:   1,
+		TenantID:     tid,
+		IMUserID:     imUserID,
+		Name:         req.Name,
+		Mobile:       req.Mobile,
+		Role:         req.Role,
+		SeatOn:       seatOn,
+		PasswordHash: string(pwHash),
+		Status:       1,
 	}
 	if err := s.store.CreateStaff(c, staff); err != nil {
 		apiresp.GinError(c, err)
@@ -165,7 +209,10 @@ func (s *Server) createStaff(c *gin.Context) {
 		TenantID: tid, ActorType: "tenant", ActorName: c.GetString("tenant_account"),
 		Action: "staff.create", Target: imUserID, IP: c.ClientIP(),
 	})
-	apiresp.GinSuccess(c, gin.H{"_id": staff.ID.Hex(), "imUserID": imUserID})
+	apiresp.GinSuccess(c, gin.H{
+		"_id": staff.ID.Hex(), "imUserID": imUserID,
+		"initialPassword": initialPassword, // 仅此一次返回
+	})
 }
 
 func (s *Server) updateStaff(c *gin.Context) {
@@ -190,8 +237,25 @@ func (s *Server) updateStaff(c *gin.Context) {
 	if req.Role != nil {
 		updates["role"] = *req.Role
 	}
-	if req.SeatOn != nil {
-		updates["seat_on"] = *req.SeatOn
+	if req.SeatOn != nil && *req.SeatOn {
+		// [XunLink] 席位硬限制：从空位转占用时校验（40301）
+		tenant, err := s.store.GetTenantByUID(c, tenantIDOf(c))
+		if err != nil {
+			apiresp.GinError(c, errs.ErrRecordNotFound.WrapMsg("tenant not found"))
+			return
+		}
+		used, err := s.store.CountSeatOnStaffs(c, tenantIDOf(c))
+		if err != nil {
+			apiresp.GinError(c, err)
+			return
+		}
+		if used >= int64(tenant.SeatsPurchased) {
+			apiresp.GinError(c, errs.NewCodeError(40301, "seat limit exceeded"))
+			return
+		}
+		updates["seat_on"] = true
+	} else if req.SeatOn != nil {
+		updates["seat_on"] = false
 	}
 	if err := s.store.UpdateStaff(c, tenantIDOf(c), id, updates); err != nil {
 		apiresp.GinError(c, err)

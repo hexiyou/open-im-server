@@ -14,15 +14,17 @@ import (
 	"github.com/openimsdk/open-im-server/v3/pkg/xlink/platform"
 	"github.com/openimsdk/tools/apiresp"
 	"github.com/openimsdk/tools/errs"
+	"google.golang.org/grpc"
 )
 
 type Server struct {
-	cfg   *platform.Config
-	store *platform.Store
+	cfg      *platform.Config
+	store    *platform.Store
+	authConn grpc.ClientConnInterface // 租户停用时强制下线成员（auth rpc ForceLogout）
 }
 
-func NewServer(cfg *platform.Config, store *platform.Store) *Server {
-	return &Server{cfg: cfg, store: store}
+func NewServer(cfg *platform.Config, store *platform.Store, authConn grpc.ClientConnInterface) *Server {
+	return &Server{cfg: cfg, store: store, authConn: authConn}
 }
 
 // SeedSuperAdmin 首次启动时初始化超级管理员（仅当账号表为空）
@@ -65,14 +67,19 @@ func (s *Server) Router() http.Handler {
 
 	authed := r.Group("/platform", s.authMiddleware())
 	{
-		// 租户管理 API-PLAT-03/04/05/06
+		// 租户管理 API-PLAT-03/04/05/06/07
 		authed.GET("/tenants", s.listTenants)
 		authed.POST("/tenants", s.writeGuard(), s.createTenant)
 		authed.PUT("/tenants/:id", s.writeGuard(), s.updateTenant)
 		authed.GET("/tenants/:id/detail", s.tenantDetail)
+		authed.POST("/tenants/:id/reset-admin-password", s.writeGuard(), s.resetTenantAdminPassword)
 		// 套餐管理 API-PLAT-08
 		authed.GET("/plans", s.listPlans)
 		authed.POST("/plans", s.writeGuard(), s.createPlan)
+		// 平台管理员管理 API-PLAT-16
+		authed.GET("/admins", s.listAdmins)
+		authed.POST("/admins", s.writeGuard(), s.createAdmin)
+		authed.PUT("/admins/:id", s.writeGuard(), s.updateAdmin)
 		// 审计 API-PLAT-15
 		authed.GET("/audit-logs", s.listAuditLogs)
 	}

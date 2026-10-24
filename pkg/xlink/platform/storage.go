@@ -120,6 +120,10 @@ func (s *Store) GetTenantByID(ctx context.Context, id primitive.ObjectID) (*Tena
 	return mongoutil.FindOne[*Tenant](ctx, s.coll(CollTenant), bson.M{"_id": id, "deleted_at": nil})
 }
 
+func (s *Store) GetTenantByUID(ctx context.Context, tenantUID int64) (*Tenant, error) {
+	return mongoutil.FindOne[*Tenant](ctx, s.coll(CollTenant), bson.M{"tenant_uid": tenantUID, "deleted_at": nil})
+}
+
 // ListTenants status<0 表示不过滤；keyword 匹配 name/tenant_code 前缀
 func (s *Store) ListTenants(ctx context.Context, status int32, keyword string, page Page) (int64, []*Tenant, error) {
 	filter := bson.M{"deleted_at": nil}
@@ -256,4 +260,126 @@ func (s *Store) UpdateStaff(ctx context.Context, tenantID int64, id primitive.Ob
 
 func (s *Store) CountStaffs(ctx context.Context, tenantID int64) (int64, error) {
 	return mongoutil.Count(ctx, s.coll(CollStaff), bson.M{"tenant_id": tenantID, "status": 1})
+}
+
+// CountSeatOnStaffs 在职且占用席位的成员数（席位硬限制依据，错误码 40301）
+func (s *Store) CountSeatOnStaffs(ctx context.Context, tenantID int64) (int64, error) {
+	return mongoutil.Count(ctx, s.coll(CollStaff), bson.M{"tenant_id": tenantID, "status": 1, "seat_on": true})
+}
+
+// ListSeatOnStaffs 坐席池（坐席调度 idle_first 的候选集）
+func (s *Store) ListSeatOnStaffs(ctx context.Context, tenantID int64) ([]*Staff, error) {
+	return mongoutil.Find[*Staff](ctx, s.coll(CollStaff), bson.M{"tenant_id": tenantID, "status": 1, "seat_on": true})
+}
+
+func (s *Store) GetStaffByIMUserID(ctx context.Context, tenantID int64, imUserID string) (*Staff, error) {
+	return mongoutil.FindOne[*Staff](ctx, s.coll(CollStaff), bson.M{"tenant_id": tenantID, "im_user_id": imUserID})
+}
+
+/* ---------------- T-08 guest ---------------- */
+
+func (s *Store) CreateGuest(ctx context.Context, g *Guest) error {
+	now := time.Now()
+	g.CreatedAt, g.UpdatedAt, g.LastActiveAt = now, now, now
+	return mongoutil.InsertMany(ctx, s.coll(CollGuest), []*Guest{g})
+}
+
+func (s *Store) GetGuestByHistoryKey(ctx context.Context, tenantID int64, historyKey string) (*Guest, error) {
+	return mongoutil.FindOne[*Guest](ctx, s.coll(CollGuest), bson.M{"tenant_id": tenantID, "history_key": historyKey})
+}
+
+func (s *Store) TouchGuestActive(ctx context.Context, id primitive.ObjectID) error {
+	return mongoutil.UpdateOne(ctx, s.coll(CollGuest), bson.M{"_id": id},
+		bson.M{"$set": bson.M{"last_active_at": time.Now(), "status": 1}}, false)
+}
+
+func (s *Store) GetGuestFingerprintBlocked(ctx context.Context, tenantID int64, fingerprint string) (bool, error) {
+	if fingerprint == "" {
+		return false, nil
+	}
+	return mongoutil.Exist(ctx, s.coll(CollGuest), bson.M{"tenant_id": tenantID, "fingerprint": fingerprint, "status": 3})
+}
+
+/* ---------------- T-09 agent_session ---------------- */
+
+func (s *Store) CreateAgentSession(ctx context.Context, a *AgentSession) error {
+	now := time.Now()
+	a.CreatedAt, a.UpdatedAt = now, now
+	return mongoutil.InsertMany(ctx, s.coll(CollAgentSession), []*AgentSession{a})
+}
+
+// CountActiveByAgent 坐席当前接待中会话数（调度权重）
+func (s *Store) CountActiveByAgent(ctx context.Context, tenantID int64, agentIMUserID string) (int64, error) {
+	return mongoutil.Count(ctx, s.coll(CollAgentSession),
+		bson.M{"tenant_id": tenantID, "agent_im_user_id": agentIMUserID, "status": bson.M{"$in": []string{"active", "queueing"}}})
+}
+
+// PickAgent 坐席调度（idle_first）：在坐席池中选当前接待数最少的坐席；无可用坐席返回 ErrNoAgentAvailable
+func (s *Store) PickAgent(ctx context.Context, tenantID int64) (*Staff, error) {
+	pool, err := s.ListSeatOnStaffs(ctx, tenantID)
+	if err != nil {
+		return nil, err
+	}
+	var best *Staff
+	bestLoad := int64(-1)
+	for _, st := range pool {
+		load, err := s.CountActiveByAgent(ctx, tenantID, st.IMUserID)
+		if err != nil {
+			return nil, err
+		}
+		if best == nil || load < bestLoad {
+			best, bestLoad = st, load
+		}
+	}
+	if best == nil {
+		return nil, ErrNoAgentAvailable
+	}
+	return best, nil
+}
+
+var ErrNoAgentAvailable = errs.NewCodeError(40402, "no agent available")
+
+/* ---------------- T-09 接待统计（配额写入侧） ---------------- */
+
+func (s *Store) UpsertQuotaUsage(ctx context.Context, tenantID int64, date string, staffActive int32) error {
+	_, err := s.coll(CollQuotaUsage).UpdateOne(ctx,
+		bson.M{"tenant_id": tenantID, "date": date},
+		bson.M{"$set": bson.M{"members": staffActive, "updated_at": time.Now()},
+			"$setOnInsert": bson.M{"online_agents": int32(0), "messages": int64(0), "storage_bytes": int64(0)}},
+		options.Update().SetUpsert(true))
+	return errs.Wrap(err)
+}
+
+/* ---------------- T-06 租户管理员扩展 ---------------- */
+
+func (s *Store) ListTenantAdmins(ctx context.Context, tenantID int64) ([]*TenantAdmin, error) {
+	return mongoutil.Find[*TenantAdmin](ctx, s.coll(CollTenantAdmin), bson.M{"tenant_id": tenantID})
+}
+
+func (s *Store) UpdateTenantAdminByUsernames(ctx context.Context, tenantID int64, usernames []string, updates bson.M) error {
+	if updates == nil {
+		updates = bson.M{}
+	}
+	updates["updated_at"] = time.Now()
+	filter := bson.M{"tenant_id": tenantID}
+	if len(usernames) > 0 {
+		filter["username"] = bson.M{"$in": usernames}
+	}
+	_, err := mongoutil.UpdateMany(ctx, s.coll(CollTenantAdmin), filter, bson.M{"$set": updates})
+	return errs.Wrap(err)
+}
+
+/* ---------------- T-03 平台管理员管理（API-PLAT-16） ---------------- */
+
+func (s *Store) ListPlatformAdmins(ctx context.Context, page Page) (int64, []*PlatformAdmin, error) {
+	return mongoutil.FindPage[*PlatformAdmin](ctx, s.coll(CollPlatformAdmin), bson.M{}, page,
+		options.Find().SetSort(bson.D{{Key: "created_at", Value: 1}}))
+}
+
+func (s *Store) UpdatePlatformAdmin(ctx context.Context, id primitive.ObjectID, updates bson.M) error {
+	if updates == nil {
+		updates = bson.M{}
+	}
+	updates["updated_at"] = time.Now()
+	return mongoutil.UpdateOne(ctx, s.coll(CollPlatformAdmin), bson.M{"_id": id}, bson.M{"$set": updates}, false)
 }
