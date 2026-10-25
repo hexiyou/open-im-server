@@ -12,9 +12,11 @@ rpcRegisterName:
 
 imAdminUserID: [ imAdmin ]
 
-# 1: For Android, iOS, Windows, Mac, and web platforms, only one instance can be online at a time
+# 0: 不踢线（多端 / 多标签页可同时在线，符合本项目"四端同时在线"要求）
+# 1: 同端互踢（Web 与 Windows 属同一终端类，会互相踢下线并吊销旧 token）
+# 2: PC 与其它端；3: 同类端互踢
 multiLogin:
-  policy: 1
+  policy: 0
   maxNumOneEnd: 30
 
 rpcMaxBodySize:

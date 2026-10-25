@@ -9,7 +9,8 @@ sessionToken:
 # Internal address of the MinIO server
 internalAddress: localhost:10005
 # External address of the MinIO server, accessible from outside. Supports both HTTP and HTTPS using a domain name
-externalAddress: http://external_ip:10005
+# 本地联调：浏览器（Windows 宿主机）需能直连该地址；WSL2 端口转发只认 localhost
+externalAddress: http://localhost:10005
 # Flag to enable or disable public read access to the bucket
 publicRead: false
 
