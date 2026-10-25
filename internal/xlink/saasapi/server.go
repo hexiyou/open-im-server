@@ -67,6 +67,21 @@ func (s *Server) licenseStatus(c *gin.Context) {
 func (s *Server) Router() http.Handler {
 	r := gin.New()
 	r.Use(gin.Recovery())
+	// CORS：商户网页嵌入组件（widget.js）与访客页可能在其他域名下访问公开接口。
+	// token 走自定义 Header、不使用 Cookie，允许任意 Origin 不存在凭证泄露问题。
+	r.Use(func(c *gin.Context) {
+		if c.GetHeader("Origin") != "" {
+			c.Header("Access-Control-Allow-Origin", "*")
+			c.Header("Access-Control-Allow-Methods", "GET,POST,PUT,DELETE,OPTIONS")
+			c.Header("Access-Control-Allow-Headers", "Content-Type,operationID,token,Authorization")
+			c.Header("Access-Control-Max-Age", "86400")
+		}
+		if c.Request.Method == http.MethodOptions {
+			c.AbortWithStatus(http.StatusNoContent)
+			return
+		}
+		c.Next()
+	})
 	r.Use(func(c *gin.Context) {
 		if c.GetHeader("operationID") == "" {
 			c.Request.Header.Set("operationID", fmt.Sprintf("saas-%d", timeNowUnixNano()))
